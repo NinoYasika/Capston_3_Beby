@@ -1,0 +1,17 @@
+streamlit
+langchain
+langchain-qdrant
+langchain-openai
+qdrant-client
+openai
+tiktoken
+
+langchain-openai 
+langchain-openai 
+langchain-qdrant 
+langchain.tools 
+langgraph.prebuilt 
+langchain-core.messages 
+
+from dotenv 
+os
