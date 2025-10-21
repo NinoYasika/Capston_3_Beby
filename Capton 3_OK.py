@@ -94,7 +94,16 @@ def chat_imdb(question, history):
     return response
 
 st.title("Chatbot Movies Master")
-st.image("C:/Users/Hi/Capstone 3/Movie Master Agent/header_img.png")
+# st.image("C:/Users/Hi/Capstone 3/Movie Master Agent/header_img.png")
+
+# Dapatkan lokasi file Python saat ini
+current_dir = os.path.dirname(__file__)
+# Gabungkan path menuju folder dan file gambar
+image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
+
+# Tampilkan gambar
+st.image(image_path)
+
 
 # Initialize chat history
 if "messages" not in st.session_state:
@@ -135,6 +144,7 @@ if prompt := st.chat_input("Ask me movies question"):
 
 
 # Untuk menjalankan streamlit copi ini (tanpa #) di comand prompt:
-# streamlit run "c:/Users/Hi/Capstone 3/Capton 3_OK.py"
+# streamlit run "C:\Users\Hi\Capstone_Tiga\Capton 3_OK.py"
+
 
 
