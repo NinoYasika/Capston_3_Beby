@@ -105,7 +105,7 @@ with st.sidebar:
     st.markdown("🤖 **Your AI Movie Expert!**")
     st.markdown("Cari tahu sinopsis, pemeran, rating IMDb, dan rekomendasi film serupa 🎞️")
     st.divider()
-    st.markdown("**Made by:** Alfian\n**Powered by:** LangChain + Qdrant + Streamlit")
+    st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit")
 
 # Header
 st.title("🎥 Movie Master Chatbot")
