@@ -1,6 +1,5 @@
 import os
 import re
-import random
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -10,29 +9,28 @@ from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
 
-# ========================================================== #
-# Load environment & API keys
-# ========================================================== #
+# --- Load environment file ---
 load_dotenv()
+
+# --- Ambil API key dari secrets atau .env ---
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-# ========================================================== #
-# Inisialisasi LLM & embeddings
-# ========================================================== #
+# --- Inisialisasi model dan embedding ---
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
-# ========================================================== #
-# Load CSV & upload ke Qdrant
-# ========================================================== #
+# ==============================================================
+# 🧩 Membaca CSV dan Upload ke Qdrant
+# ==============================================================
+
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
     if not os.path.exists(csv_path):
-        st.error("❌ File imdb_movies.csv tidak ditemukan.")
+        st.error("❌ File imdb_movies.csv tidak ditemukan di folder proyek.")
         st.stop()
 
     df = pd.read_csv(csv_path)
@@ -57,95 +55,108 @@ def load_and_upload_csv_to_qdrant():
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY
         )
-        st.success("✅ Koleksi 'imdb_movies' berhasil diunggah!")
+        st.success("✅ Koleksi 'imdb_movies' berhasil diunggah ke Qdrant!")
     except Exception as e:
-        st.warning(f"⚠️ Koleksi mungkin sudah ada. Melanjutkan. ({str(e)})")
+        st.warning(f"⚠️ Koleksi mungkin sudah ada: {str(e)}")
 
 load_and_upload_csv_to_qdrant()
 
-# Gunakan koleksi yang sudah ada
 qdrant = QdrantVectorStore.from_existing_collection(
-    embedding=embeddings,
-    collection_name=collection_name,
-    url=QDRANT_URL,
-    api_key=QDRANT_API_KEY
+    embedding=embeddings, collection_name=collection_name,
+    url=QDRANT_URL, api_key=QDRANT_API_KEY
 )
 
-# Load CSV untuk fallback
-df_movies = pd.read_csv(os.path.join(os.path.dirname(__file__), "imdb_movies.csv"))
-all_titles = df_movies["Series_Title"].dropna().tolist()
+# ==============================================================
+# 🎬 Tool dan fungsi chatbot
+# ==============================================================
 
-# ========================================================== #
-# Tool LangChain
-# ========================================================== #
 @tool
-def get_relevant_docs(question: str):
-    """
-    Cari dokumen film relevan dari Qdrant berdasarkan pertanyaan user.
-
-    Args:
-        question (str): Judul film atau pertanyaan tentang film.
-
-    Returns:
-        list: List dokumen terkait dari Qdrant.
-    """
-    results = qdrant.similarity_search(question, k=5)
-    return results
+def get_relevant_docs(question):
+    """Gunakan tool ini untuk mencari dokumen film terkait."""
+    return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
 
-# ========================================================== #
-# Fungsi rekomendasi film cerdas
-# ========================================================== #
+# ==============================================================
+# 🧠 Fungsi rekomendasi film unik (3 hasil berbeda)
+# ==============================================================
+
 def get_similar_movies(title, top_k=3):
-    """
-    Cari rekomendasi film serupa berdasarkan judul.
-    Menggunakan similarity search + fallback random dari CSV.
-    """
     try:
-        similar_docs = qdrant.similarity_search(title, k=200)
-        def normalize_text(text): return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
+        similar_docs = qdrant.similarity_search(title, k=top_k + 50)
+
+        def normalize_text(t):
+            return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
+
         title_norm = normalize_text(title)
         unique_titles = set()
-        recommendations = []
+        filtered = []
 
         for doc in similar_docs:
-            candidate = doc.metadata.get("Series_Title", "")
-            candidate_norm = normalize_text(candidate)
-            if candidate_norm != title_norm and candidate_norm not in unique_titles:
-                unique_titles.add(candidate_norm)
-                recommendations.append(candidate)
-            if len(recommendations) >= top_k: break
+            raw_title = doc.metadata.get("Series_Title", "")
+            movie_title = normalize_text(raw_title)
+            if movie_title != title_norm and movie_title not in unique_titles:
+                unique_titles.add(movie_title)
+                filtered.append(doc)
+            if len(filtered) >= top_k:
+                break
 
-        remaining = top_k - len(recommendations)
-        if remaining > 0:
-            fallback_candidates = [
-                t for t in all_titles
-                if normalize_text(t) != title_norm and normalize_text(t) not in unique_titles
-            ]
-            recommendations.extend(random.sample(fallback_candidates, min(remaining, len(fallback_candidates))))
+        recommendations = [d.metadata["Series_Title"] for d in filtered[:top_k]]
+        recommendations = [r for r in recommendations if normalize_text(r) != title_norm]
+
+        # Tambah hasil cadangan jika masih kurang
+        if len(recommendations) < top_k:
+            for d in similar_docs:
+                title_extra = normalize_text(d.metadata.get("Series_Title", ""))
+                if title_extra not in unique_titles and title_extra != title_norm:
+                    recommendations.append(d.metadata["Series_Title"])
+                    unique_titles.add(title_extra)
+                if len(recommendations) >= top_k:
+                    break
+
+        while len(recommendations) < top_k:
+            recommendations.append("(Belum cukup data relevan)")
 
         return recommendations[:top_k]
 
     except Exception as e:
-        fallback_candidates = [t for t in all_titles if re.sub(r'[^a-z0-9 ]', '', t.lower().strip()) != re.sub(r'[^a-z0-9 ]', '', title.lower().strip())]
-        return random.sample(fallback_candidates, top_k)
+        return [f"Error: {str(e)}"]
 
-# ========================================================== #
-# Fungsi chatbot
-# ========================================================== #
-def chat_imdb(question):
+# ==============================================================
+# 💬 Fungsi utama chatbot
+# ==============================================================
+
+def chat_imdb(question, history):
     agent = create_react_agent(
-        model=llm,
-        tools=tools,
-        prompt="You are a movie expert. Use the tools to answer accurately about movies, genres, plots, directors, and stars."
+        model=llm, tools=tools,
+        prompt="You are a movie expert. Use the tools to answer accurately about movies."
     )
     result = agent.invoke({"messages": [{"role": "user", "content": question}]})
-    return result["messages"][-1].content
+    answer = result["messages"][-1].content
 
-# ========================================================== #
-# Streamlit UI
-# ========================================================== #
+    total_input_tokens = sum(
+        msg.response_metadata.get("usage_metadata", {}).get("input_tokens", 0)
+        for msg in result["messages"]
+    )
+    total_output_tokens = sum(
+        msg.response_metadata.get("usage_metadata", {}).get("output_tokens", 0)
+        for msg in result["messages"]
+    )
+
+    price = 17000 * (total_input_tokens * 0.15 + total_output_tokens * 0.6) / 1_000_000
+    tool_messages = [msg.content for msg in result["messages"] if isinstance(msg, ToolMessage)]
+
+    return {
+        "answer": answer, "price": price,
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "tool_messages": tool_messages
+    }
+
+# ==============================================================
+# 🎨 Tampilan Streamlit
+# ==============================================================
+
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
 with st.sidebar:
@@ -157,25 +168,37 @@ with st.sidebar:
 
 st.title("🎥 Movie Master Chatbot")
 
-# Input teks
-prompt_text = st.text_input("💬 Ketik pertanyaan atau judul film...")
+current_dir = os.path.dirname(__file__)
+image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
+if os.path.exists(image_path):
+    st.image(image_path, width=800)
 
-# Proses chatbot + rekomendasi
-if prompt_text:
-    st.session_state.setdefault("messages", [])
-    st.session_state.messages.append({"role": "Human", "content": prompt_text})
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
+for msg in st.session_state.messages:
+    avatar = "🧑‍💻" if msg["role"] == "Human" else "🎬"
+    with st.chat_message(msg["role"], avatar=avatar):
+        st.markdown(msg["content"])
+
+if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
+    st.session_state.messages.append({"role": "Human", "content": prompt})
     with st.chat_message("Human", avatar="🧑‍💻"):
-        st.markdown(prompt_text)
+        st.markdown(prompt)
 
     with st.chat_message("AI", avatar="🎬"):
         with st.spinner("🎞️ Searching the movie database..."):
-            answer = chat_imdb(prompt_text)
-            st.markdown(answer)
-            st.session_state.messages.append({"role": "AI", "content": answer})
+            response = chat_imdb(prompt, st.session_state.messages)
+            st.markdown(response["answer"])
+            st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
-            recommendations = get_similar_movies(prompt_text)
-            for idx, rec in enumerate(recommendations, start=1):
-                st.markdown(f"{idx}. **{rec}**")
+            for i, rec in enumerate(get_similar_movies(prompt), start=1):
+                st.markdown(f"{i}. **{rec}**")
+
+    with st.expander("📊 Token Usage & Tool Logs"):
+        st.write(f"Input tokens: {response['total_input_tokens']}")
+        st.write(f"Output tokens: {response['total_output_tokens']}")
+        st.write(f"Estimated cost: Rp {response['price']:.4f}")
+        st.code(response["tool_messages"])
