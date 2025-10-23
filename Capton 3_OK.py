@@ -23,33 +23,6 @@ embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API
 collection_name = "imdb_movies"
 
 # ============================================================== #
-# 🌙 Fungsi Toggle Dark/Light Mode
-# ============================================================== #
-
-def apply_theme(dark_mode: bool):
-    if dark_mode:
-        theme_css = """
-        <style>
-        body, .stApp { background-color: #0E1117; color: #F5F5F5; }
-        [data-testid="stSidebar"] { background-color: #1C1E24; color: #F5F5F5; }
-        .st-chat-message { background-color: #1C1E24 !important; color: #F5F5F5 !important; }
-        .stExpander { background-color: #1C1E24 !important; color: #F5F5F5 !important; }
-        .css-1d391kg p { color: #F5F5F5; }
-        </style>
-        """
-    else:
-        theme_css = """
-        <style>
-        body, .stApp { background-color: #FFFFFF; color: #000000; }
-        [data-testid="stSidebar"] { background-color: #F0F2F6; color: #000000; }
-        .st-chat-message { background-color: #F0F2F6 !important; color: #000000 !important; }
-        .stExpander { background-color: #F0F2F6 !important; color: #000000 !important; }
-        .css-1d391kg p { color: #000000; }
-        </style>
-        """
-    st.markdown(theme_css, unsafe_allow_html=True)
-
-# ============================================================== #
 # 🧩 Membaca CSV dan Upload ke Qdrant
 # ============================================================== #
 
@@ -101,15 +74,6 @@ qdrant = QdrantVectorStore.from_existing_collection(
 
 @tool
 def get_relevant_docs(question: str) -> list:
-    """
-    Tool untuk mencari dokumen film relevan di Qdrant berdasarkan pertanyaan atau judul film.
-
-    Args:
-        question (str): Pertanyaan pengguna atau judul film.
-
-    Returns:
-        list: List dokumen film teratas yang relevan dengan pertanyaan.
-    """
     return qdrant.similarity_search(question, k=50)
 
 tools = [get_relevant_docs]
@@ -232,11 +196,8 @@ def chat_imdb(question, history):
 
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
-# Sidebar dengan toggle Dark/Light Mode
 with st.sidebar:
     st.title("🎬 Movie Lovers")
-    dark_mode = st.checkbox("🌙 Dark Mode", value=True)
-    apply_theme(dark_mode)
     st.markdown("🤖 **Your AI Movie Expert!**")
     st.markdown("Cari tahu sinopsis, pemeran, dan film serupa 🎞️")
     st.divider()
