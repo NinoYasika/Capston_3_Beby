@@ -82,23 +82,31 @@ tools = [get_relevant_docs]
 # ============================================================== #
 
 def get_similar_movies(title_or_question, top_k=3):
+    """
+    Rekomendasi film berdasarkan kemiripan teks.
+    Memastikan film utama tidak muncul.
+    """
     try:
         similar_docs = qdrant.similarity_search(title_or_question, k=50)
 
-        # Normalisasi untuk perbandingan
-        def normalize_title(title):
-            return re.sub(r'\s+', ' ', title.strip().lower())
+        # Tentukan judul utama (film yang paling relevan)
+        if similar_docs:
+            main_doc = similar_docs[0]
+            main_title = main_doc.metadata.get("Series_Title", "").strip().lower()
+        else:
+            main_title = title_or_question.strip().lower()
 
-        input_norm = normalize_title(title_or_question)
         recommendations = []
         unique_titles = set()
 
         for doc in similar_docs:
             doc_title = doc.metadata.get("Series_Title", "").strip()
-            doc_norm = normalize_title(doc_title)
+            if not doc_title:
+                continue
+            doc_norm = doc_title.lower()
 
-            # Skip film yang sama
-            if doc_norm == input_norm or doc_norm in unique_titles or doc_title == "":
+            # Skip film utama dan duplikat
+            if doc_norm == main_title or doc_norm in unique_titles:
                 continue
 
             unique_titles.add(doc_norm)
@@ -122,6 +130,7 @@ def show_movie_recommendations(title_or_question, top_k=3):
     st.subheader("🎬 Rekomendasi Film Serupa:")
     for i, doc in enumerate(recommendations, start=1):
         rec_title = doc.metadata.get("Series_Title", "")
+        year = doc.metadata.get("Released_Year", "Unknown")
         genre = doc.metadata.get("Genre", "Unknown")
         poster_url = doc.metadata.get("Poster_Link", "")
 
@@ -132,7 +141,7 @@ def show_movie_recommendations(title_or_question, top_k=3):
             else:
                 st.write("No poster")
         with cols[1]:
-            st.markdown(f"**{i}. {rec_title}**")
+            st.markdown(f"**{i}. {rec_title} ({year})**")
             st.markdown(f"Genre: {genre}")
         st.markdown("---")
 
