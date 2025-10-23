@@ -49,7 +49,7 @@ def load_and_upload_csv_to_qdrant():
     metadatas = df.to_dict(orient="records")
 
     try:
-        qdrant_store = QdrantVectorStore.from_texts(
+        QdrantVectorStore.from_texts(
             texts=texts,
             embedding=embeddings,
             metadatas=metadatas,
@@ -83,20 +83,30 @@ def get_relevant_docs(question):
 
 tools = [get_relevant_docs]
 
-# --- Fungsi rekomendasi film dengan filter unik ---
+# --- Fungsi rekomendasi film dengan filter unik dan hasil berbeda ---
 def get_similar_movies(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=top_k + 5)
+        # Ambil lebih banyak hasil agar bisa disaring
+        similar_docs = qdrant.similarity_search(title, k=top_k + 10)
         unique_titles = set()
         filtered = []
+
         for doc in similar_docs:
             movie_title = doc.metadata.get("Series_Title", "").strip().lower()
-            # Hindari hasil duplikat atau film yang sama
-            if movie_title != title.lower() and movie_title not in unique_titles:
+            # Hindari film yang sama atau mirip dengan input utama
+            if (
+                movie_title != title.lower()
+                and title.lower() not in movie_title
+                and movie_title not in unique_titles
+            ):
                 unique_titles.add(movie_title)
                 filtered.append(doc)
+            # Berhenti jika sudah cukup hasil
+            if len(filtered) >= top_k:
+                break
 
         recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
+
         if recommendations:
             return recommendations
         else:
@@ -157,7 +167,7 @@ st.title("🎥 Movie Master Chatbot")
 current_dir = os.path.dirname(__file__)
 image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
 if os.path.exists(image_path):
-    st.image(image_path, use_container_width=True)
+    st.image(image_path, width=800)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -179,6 +189,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(answer)
             st.session_state.messages.append({"role": "AI", "content": answer})
 
+            # --- Rekomendasi film serupa ---
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
             recommendations = get_similar_movies(prompt)
