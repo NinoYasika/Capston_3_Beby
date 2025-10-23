@@ -12,3 +12,4 @@ python-dotenv
 streamlit-webrtc
 numpy
 pandas
+scikit-learn
