@@ -23,43 +23,31 @@ embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API
 collection_name = "imdb_movies"
 
 # ============================================================== #
-# 🌙 Dark mode custom CSS
+# 🌙 Fungsi Toggle Dark/Light Mode
 # ============================================================== #
 
-dark_mode_css = """
-<style>
-/* Background & text */
-body, .stApp {
-    background-color: #0E1117;
-    color: #F5F5F5;
-}
-
-/* Sidebar */
-[data-testid="stSidebar"] {
-    background-color: #1C1E24;
-    color: #F5F5F5;
-}
-
-/* Chat messages */
-.st-chat-message {
-    background-color: #1C1E24 !important;
-    color: #F5F5F5 !important;
-}
-
-/* Expander */
-.stExpander {
-    background-color: #1C1E24 !important;
-    color: #F5F5F5 !important;
-}
-
-/* Columns text */
-.css-1d391kg p {
-    color: #F5F5F5;
-}
-</style>
-"""
-
-st.markdown(dark_mode_css, unsafe_allow_html=True)
+def apply_theme(dark_mode: bool):
+    if dark_mode:
+        theme_css = """
+        <style>
+        body, .stApp { background-color: #0E1117; color: #F5F5F5; }
+        [data-testid="stSidebar"] { background-color: #1C1E24; color: #F5F5F5; }
+        .st-chat-message { background-color: #1C1E24 !important; color: #F5F5F5 !important; }
+        .stExpander { background-color: #1C1E24 !important; color: #F5F5F5 !important; }
+        .css-1d391kg p { color: #F5F5F5; }
+        </style>
+        """
+    else:
+        theme_css = """
+        <style>
+        body, .stApp { background-color: #FFFFFF; color: #000000; }
+        [data-testid="stSidebar"] { background-color: #F0F2F6; color: #000000; }
+        .st-chat-message { background-color: #F0F2F6 !important; color: #000000 !important; }
+        .stExpander { background-color: #F0F2F6 !important; color: #000000 !important; }
+        .css-1d391kg p { color: #000000; }
+        </style>
+        """
+    st.markdown(theme_css, unsafe_allow_html=True)
 
 # ============================================================== #
 # 🧩 Membaca CSV dan Upload ke Qdrant
@@ -244,8 +232,11 @@ def chat_imdb(question, history):
 
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
+# Sidebar dengan toggle Dark/Light Mode
 with st.sidebar:
     st.title("🎬 Movie Lovers")
+    dark_mode = st.checkbox("🌙 Dark Mode", value=True)
+    apply_theme(dark_mode)
     st.markdown("🤖 **Your AI Movie Expert!**")
     st.markdown("Cari tahu sinopsis, pemeran, dan film serupa 🎞️")
     st.divider()
@@ -277,7 +268,6 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film visual berdasarkan multi-kriteria
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
