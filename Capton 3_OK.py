@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -8,25 +9,26 @@ from langchain_qdrant import QdrantVectorStore
 from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
+import openai
+from st_audiorec import st_audiorec
 
 # --- Load environment file ---
 load_dotenv()
 
-# --- Ambil API key dari secrets atau .env ---
+# --- Ambil API key ---
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
+openai.api_key = OPENAI_API_KEY
 
-# --- Inisialisasi model dan embedding ---
+# --- Inisialisasi model & embedding ---
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
-
 collection_name = "imdb_movies"
 
 # ============================================================== #
-# 🧩 Membaca CSV dan Upload ke Qdrant (hanya pertama kali)
+# Load CSV & upload ke Qdrant (hanya pertama kali)
 # ============================================================== #
-
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
@@ -35,8 +37,6 @@ def load_and_upload_csv_to_qdrant():
         st.stop()
 
     df = pd.read_csv(csv_path)
-
-    # Gabungkan kolom penting menjadi satu teks untuk embedding
     df["combined_text"] = (
         "Title: " + df["Series_Title"].fillna("") + ". " +
         "Genre: " + df["Genre"].fillna("") + ". " +
@@ -64,7 +64,7 @@ def load_and_upload_csv_to_qdrant():
 
 load_and_upload_csv_to_qdrant()
 
-# --- Gunakan koleksi yang sudah ada ---
+# Gunakan koleksi yang sudah ada
 qdrant = QdrantVectorStore.from_existing_collection(
     embedding=embeddings,
     collection_name=collection_name,
@@ -73,21 +73,18 @@ qdrant = QdrantVectorStore.from_existing_collection(
 )
 
 # ============================================================== #
-# 🎬 Tool dan fungsi chatbot
+# Tool & fungsi chatbot
 # ============================================================== #
-
 @tool
 def get_relevant_docs(question):
-    """Gunakan tool ini untuk mencari dokumen film terkait."""
     results = qdrant.similarity_search(question, k=5)
     return results
 
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film serupa (3 hasil unik & berbeda)
+# Fungsi rekomendasi film unik
 # ============================================================== #
-
 def get_similar_movies(title, top_k=3):
     try:
         similar_docs = qdrant.similarity_search(title, k=top_k + 50)
@@ -97,42 +94,16 @@ def get_similar_movies(title, top_k=3):
 
         title_norm = normalize_text(title)
         unique_titles = set()
-        filtered = []
-
-        # 1️⃣ Filter hasil agar tidak duplikat dan tidak sama
-        for doc in similar_docs:
-            raw_title = doc.metadata.get("Series_Title", "")
-            movie_title = normalize_text(raw_title)
-
-            if movie_title != title_norm and movie_title not in unique_titles:
-                unique_titles.add(movie_title)
-                filtered.append(doc)
-            if len(filtered) >= top_k + 5:  # ambil lebih banyak dulu untuk disaring
-                break
-
-        # 2️⃣ Ambil 3 film unik berbeda dari judul utama
         recommendations = []
-        for doc in filtered:
+
+        for doc in similar_docs:
             candidate = doc.metadata.get("Series_Title", "")
-            if normalize_text(candidate) != title_norm and candidate not in recommendations:
+            candidate_norm = normalize_text(candidate)
+            if candidate_norm != title_norm and candidate_norm not in unique_titles:
+                unique_titles.add(candidate_norm)
                 recommendations.append(candidate)
             if len(recommendations) >= top_k:
                 break
-
-        # 3️⃣ Jika hasil kurang dari 3, tambahkan cadangan dari hasil lain
-        if len(recommendations) < top_k:
-            extras = [
-                d.metadata.get("Series_Title", "")
-                for d in similar_docs
-                if normalize_text(d.metadata.get("Series_Title", "")) != title_norm
-                and d.metadata.get("Series_Title", "") not in recommendations
-            ]
-            recommendations.extend(extras[: top_k - len(recommendations)])
-
-        # 4️⃣ Pastikan tidak ada film utama & hasil tetap 3
-        recommendations = [
-            r for r in recommendations if normalize_text(r) != title_norm
-        ][:top_k]
 
         while len(recommendations) < top_k:
             recommendations.append("(Belum cukup data relevan)")
@@ -142,50 +113,21 @@ def get_similar_movies(title, top_k=3):
     except Exception as e:
         return [f"Error saat mencari rekomendasi: {str(e)}"]
 
-
 # ============================================================== #
-# 💬 Fungsi utama chatbot
+# Fungsi chatbot
 # ============================================================== #
-
-def chat_imdb(question, history):
+def chat_imdb(question):
     agent = create_react_agent(
         model=llm,
         tools=tools,
         prompt="You are a movie expert. Use the tools to answer accurately about movies, genres, plots, directors, and stars."
     )
     result = agent.invoke({"messages": [{"role": "user", "content": question}]})
-    answer = result["messages"][-1].content
-
-    total_input_tokens = 0
-    total_output_tokens = 0
-    for message in result["messages"]:
-        if "usage_metadata" in message.response_metadata:
-            total_input_tokens += message.response_metadata["usage_metadata"]["input_tokens"]
-            total_output_tokens += message.response_metadata["usage_metadata"]["output_tokens"]
-        elif "token_usage" in message.response_metadata:
-            total_input_tokens += message.response_metadata["token_usage"].get("prompt_tokens", 0)
-            total_output_tokens += message.response_metadata["token_usage"].get("completion_tokens", 0)
-
-    price = 17000 * (total_input_tokens * 0.15 + total_output_tokens * 0.6) / 1_000_000
-
-    tool_messages = [
-        message.content for message in result["messages"]
-        if isinstance(message, ToolMessage)
-    ]
-
-    return {
-        "answer": answer,
-        "price": price,
-        "total_input_tokens": total_input_tokens,
-        "total_output_tokens": total_output_tokens,
-        "tool_messages": tool_messages
-    }
-
+    return result["messages"][-1].content
 
 # ============================================================== #
-# 🎨 Tampilan Streamlit
+# Tampilan Streamlit
 # ============================================================== #
-
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
 with st.sidebar:
@@ -197,40 +139,50 @@ with st.sidebar:
 
 st.title("🎥 Movie Master Chatbot")
 
-current_dir = os.path.dirname(__file__)
-image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
-if os.path.exists(image_path):
-    st.image(image_path, width=800)
+# ========================================================== #
+# Tombol perekam audio langsung interaktif
+# ========================================================== #
+audio_bytes = st_audiorec()
+prompt_text = None
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if audio_bytes is not None:
+    audio_file = io.BytesIO(audio_bytes)
+    st.audio(audio_file, format="audio/wav")
 
-for message in st.session_state.messages:
-    avatar = "🧑‍💻" if message["role"] == "Human" else "🎬"
-    with st.chat_message(message["role"], avatar=avatar):
-        st.markdown(message["content"])
+    # Otomatis transkrip & kirim ke chatbot
+    with st.spinner("📝 Mengubah suara menjadi teks..."):
+        transcription = openai.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file
+        )
+        prompt_text = transcription.text
+        st.markdown(f"**Transkrip:** {prompt_text}")
 
-if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
-    st.session_state.messages.append({"role": "Human", "content": prompt})
+# ========================================================== #
+# Input text alternatif
+# ========================================================== #
+text_input = st.text_input("💬 Atau ketik pertanyaan tentang film...", "")
+if text_input:
+    prompt_text = text_input
+
+# ========================================================== #
+# Proses chatbot + rekomendasi
+# ========================================================== #
+if prompt_text:
+    st.session_state.setdefault("messages", [])
+    st.session_state.messages.append({"role": "Human", "content": prompt_text})
+
     with st.chat_message("Human", avatar="🧑‍💻"):
-        st.markdown(prompt)
+        st.markdown(prompt_text)
 
     with st.chat_message("AI", avatar="🎬"):
         with st.spinner("🎞️ Searching the movie database..."):
-            response = chat_imdb(prompt, st.session_state.messages)
-            answer = response["answer"]
+            answer = chat_imdb(prompt_text)
             st.markdown(answer)
             st.session_state.messages.append({"role": "AI", "content": answer})
 
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
-            recommendations = get_similar_movies(prompt)
+            recommendations = get_similar_movies(prompt_text)
             for idx, rec in enumerate(recommendations, start=1):
                 st.markdown(f"{idx}. **{rec}**")
-
-    with st.expander("📊 Token Usage & Tool Logs"):
-        st.write(f"**Input tokens:** {response['total_input_tokens']}")
-        st.write(f"**Output tokens:** {response['total_output_tokens']}")
-        st.write(f"**Estimated cost:** Rp {response['price']:.4f}")
-        st.write("**Tool Messages:**")
-        st.code(response["tool_messages"])
