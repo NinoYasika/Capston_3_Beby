@@ -9,3 +9,6 @@ qdrant-client
 openai
 tiktoken
 python-dotenv
+streamlit-webrtc
+numpy
+pandas
