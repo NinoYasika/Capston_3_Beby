@@ -37,12 +37,10 @@ def load_and_upload_csv_to_qdrant():
     df["combined_text"] = (
         "Title: " + df["Series_Title"].fillna("") + ". " +
         "Genre: " + df["Genre"].fillna("") + ". " +
-        "Certificate: " + df["Certificate"].fillna("") + ". " +
         "Overview: " + df["Overview"].fillna("") + ". " +
         "Director: " + df["Director"].fillna("") + ". " +
         "Stars: " + df["Star1"].fillna("") + ", " + df["Star2"].fillna("") + ", " +
-        df["Star3"].fillna("") + ", " + df["Star4"].fillna("") + ". " +
-        "IMDb Rating: " + df["IMDB_Rating"].fillna("").astype(str)
+        df["Star3"].fillna("") + ", " + df["Star4"].fillna("")
     )
 
     texts = df["combined_text"].tolist()
@@ -72,81 +70,67 @@ qdrant = QdrantVectorStore.from_existing_collection(
 # 🎬 Tool dan fungsi chatbot
 # ============================================================== #
 
-# Tool untuk mencari dokumen film relevan di Qdrant
 @tool
-def get_relevant_docs(question: str) -> list:
-    return qdrant.similarity_search(question, k=50)
+def get_relevant_docs(question):
+    """Gunakan tool ini untuk mencari dokumen film terkait."""
+    return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film berdasarkan multi-kriteria
+# 🧠 Fungsi rekomendasi film berdasarkan genre
 # ============================================================== #
 
-def get_similar_movies(title_or_question, top_k=3):
+def get_similar_movies_by_genre(title, top_k=3):
     try:
-        docs = qdrant.similarity_search(title_or_question, k=50)
-        if not docs:
-            return []
+        similar_docs = qdrant.similarity_search(title, k=50)
 
-        def normalize_title(title):
-            return re.sub(r'\s+', ' ', title.strip().lower())
+        def normalize_text(t):
+            return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
 
-        main_doc_title = docs[0].metadata.get("Series_Title", "")
-        main_norm = normalize_title(main_doc_title)
+        title_norm = normalize_text(title)
+        input_genre = ""
+        for doc in similar_docs:
+            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
+                input_genre = doc.metadata.get("Genre", "")
+                break
 
-        scored_docs = []
-        for doc in docs:
-            doc_title = doc.metadata.get("Series_Title", "")
-            if not doc_title or normalize_title(doc_title) == main_norm:
+        input_genres = [g.strip().lower() for g in input_genre.split(",")]
+
+        unique_titles = set()
+        recommendations = []
+
+        for doc in similar_docs:
+            raw_title = doc.metadata.get("Series_Title", "")
+            movie_title = normalize_text(raw_title)
+            if movie_title == title_norm or movie_title in unique_titles:
                 continue
 
-            score = 0
-            # Genre overlap
-            genre_input = docs[0].metadata.get("Genre", "").lower().split(", ")
-            genre_doc = doc.metadata.get("Genre", "").lower().split(", ")
-            genre_score = len(set(genre_input) & set(genre_doc)) / max(len(set(genre_input)), 1)
-            score += genre_score * 0.4
+            doc_genre = doc.metadata.get("Genre", "")
+            doc_genres = [g.strip().lower() for g in doc_genre.split(",")]
+            if any(g in input_genres for g in doc_genres):
+                unique_titles.add(movie_title)
+                recommendations.append(doc)
 
-            # Certificate match
-            cert_input = docs[0].metadata.get("Certificate", "").lower()
-            cert_doc = doc.metadata.get("Certificate", "").lower()
-            if cert_input and cert_input == cert_doc:
-                score += 0.2
+            if len(recommendations) >= top_k:
+                break
 
-            # IMDb rating closeness
-            try:
-                rating_input = float(docs[0].metadata.get("IMDB_Rating", 0))
-                rating_doc = float(doc.metadata.get("IMDB_Rating", 0))
-                rating_diff = abs(rating_input - rating_doc)
-                rating_score = max(0, 1 - rating_diff / 10)
-                score += rating_score * 0.4
-            except:
-                pass
-
-            scored_docs.append((score, doc))
-
-        scored_docs.sort(key=lambda x: x[0], reverse=True)
-        recommendations = [doc for score, doc in scored_docs[:top_k]]
-        return recommendations
+        return recommendations  # langsung kembalikan list dokumen
 
     except Exception as e:
-        st.error(f"❌ Error mencari rekomendasi: {e}")
         return []
 
-def show_movie_recommendations(title_or_question, top_k=3):
-    recommendations = get_similar_movies(title_or_question, top_k=top_k)
+def show_movie_recommendations(title, top_k=3):
+    recommendations = get_similar_movies_by_genre(title, top_k=top_k)
+
     if not recommendations:
-        st.info("🎬 Tidak ada film serupa ditemukan.")
+        st.info("🎬 Tidak ada film serupa berdasarkan genre.")
         return
 
     st.subheader("🎬 Rekomendasi Film Serupa:")
     for i, doc in enumerate(recommendations, start=1):
         rec_title = doc.metadata.get("Series_Title", "")
-        year = doc.metadata.get("Released_Year", "Unknown")
         genre = doc.metadata.get("Genre", "Unknown")
-        cert = doc.metadata.get("Certificate", "Unknown")
-        rating = doc.metadata.get("IMDB_Rating", "Unknown")
         poster_url = doc.metadata.get("Poster_Link", "")
 
         cols = st.columns([1, 3])
@@ -156,8 +140,8 @@ def show_movie_recommendations(title_or_question, top_k=3):
             else:
                 st.write("No poster")
         with cols[1]:
-            st.markdown(f"**{i}. {rec_title} ({year})**")
-            st.markdown(f"Genre: {genre} | Certificate: {cert} | IMDb: {rating}")
+            st.markdown(f"**{i}. {rec_title}**")
+            st.markdown(f"Genre: {genre}")
         st.markdown("---")
 
 # ============================================================== #
@@ -230,6 +214,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
+            # Tampilkan rekomendasi film visual berdasarkan genre
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
