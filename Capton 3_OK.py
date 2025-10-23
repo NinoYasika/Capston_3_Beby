@@ -12,25 +12,22 @@ from langchain_core.messages import ToolMessage
 # --- Load environment file ---
 load_dotenv()
 
-# --- Ambil API key dari secrets atau .env ---
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-# --- Inisialisasi model dan embedding ---
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
 # ============================================================== #
-# 🧩 Membaca CSV dan Upload ke Qdrant
+# 🧩 Load CSV dan Upload ke Qdrant
 # ============================================================== #
-
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
     if not os.path.exists(csv_path):
-        st.error("❌ File imdb_movies.csv tidak ditemukan di folder proyek.")
+        st.error("❌ File imdb_movies.csv tidak ditemukan.")
         st.stop()
 
     df = pd.read_csv(csv_path)
@@ -67,70 +64,89 @@ qdrant = QdrantVectorStore.from_existing_collection(
 )
 
 # ============================================================== #
-# 🎬 Tool dan fungsi chatbot
+# 🎬 Tool pencarian dokumen
 # ============================================================== #
-
 @tool
 def get_relevant_docs(question):
-    """Gunakan tool ini untuk mencari dokumen film terkait."""
     return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film berdasarkan genre
+# 🧠 Rekomendasi film dengan multi-kriteria
 # ============================================================== #
-
-def get_similar_movies_by_genre(title, top_k=3):
+def get_similar_movies_advanced(title, top_k=3):
+    """Rekomendasi berdasarkan genre, IMDb Rating, Certificate, dan kemiripan cerita"""
     try:
         similar_docs = qdrant.similarity_search(title, k=50)
 
         def normalize_text(t):
-            return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
+            return re.sub(r'[^a-z0-9 ]', '', str(t).lower().strip())
 
         title_norm = normalize_text(title)
-        input_genre = ""
+        input_doc = None
         for doc in similar_docs:
             if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
-                input_genre = doc.metadata.get("Genre", "")
+                input_doc = doc
                 break
 
-        input_genres = [g.strip().lower() for g in input_genre.split(",")]
+        if not input_doc:
+            return []
 
-        unique_titles = set()
-        recommendations = []
+        input_genres = [g.strip().lower() for g in input_doc.metadata.get("Genre", "").split(",")]
+        input_overview = input_doc.metadata.get("Overview", "")
+
+        scored_docs = []
 
         for doc in similar_docs:
-            raw_title = doc.metadata.get("Series_Title", "")
-            movie_title = normalize_text(raw_title)
-            if movie_title == title_norm or movie_title in unique_titles:
+            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
                 continue
 
-            doc_genre = doc.metadata.get("Genre", "")
-            doc_genres = [g.strip().lower() for g in doc_genre.split(",")]
-            if any(g in input_genres for g in doc_genres):
-                unique_titles.add(movie_title)
-                recommendations.append(doc)
+            # Skor genre
+            doc_genres = [g.strip().lower() for g in doc.metadata.get("Genre", "").split(",")]
+            genre_score = len(set(input_genres) & set(doc_genres)) / max(len(set(input_genres)), 1)
 
-            if len(recommendations) >= top_k:
-                break
+            # Skor IMDb Rating (lebih tinggi lebih baik)
+            try:
+                imdb_score = float(doc.metadata.get("IMDB_Rating", 0))
+            except:
+                imdb_score = 0
+            imdb_score_norm = imdb_score / 10  # skala 0-1
 
-        return recommendations  # langsung kembalikan list dokumen
+            # Skor Certificate (lebih aman / sama kategori)
+            cert_score = 1 if doc.metadata.get("Certificate") == input_doc.metadata.get("Certificate") else 0
+
+            # Skor kemiripan cerita (overview)
+            from sklearn.feature_extraction.text import TfidfVectorizer
+            from sklearn.metrics.pairwise import cosine_similarity
+            tfidf = TfidfVectorizer().fit([input_overview, doc.metadata.get("Overview", "")])
+            overview_score = cosine_similarity(tfidf.transform([input_overview]),
+                                              tfidf.transform([doc.metadata.get("Overview", "")]))[0][0]
+
+            # Skor total (bobot bisa diubah)
+            total_score = 0.4 * genre_score + 0.3 * imdb_score_norm + 0.1 * cert_score + 0.2 * overview_score
+            scored_docs.append((total_score, doc))
+
+        scored_docs.sort(key=lambda x: x[0], reverse=True)
+        top_docs = [doc for score, doc in scored_docs[:top_k]]
+        return top_docs
 
     except Exception as e:
+        st.error(f"Error recommendation: {str(e)}")
         return []
 
-def show_movie_recommendations(title, top_k=3):
-    recommendations = get_similar_movies_by_genre(title, top_k=top_k)
-
+def show_movie_recommendations_advanced(title, top_k=3):
+    recommendations = get_similar_movies_advanced(title, top_k=top_k)
     if not recommendations:
-        st.info("🎬 Tidak ada film serupa berdasarkan genre.")
+        st.info("🎬 Tidak ada film serupa yang cocok.")
         return
 
     st.subheader("🎬 Rekomendasi Film Serupa:")
     for i, doc in enumerate(recommendations, start=1):
         rec_title = doc.metadata.get("Series_Title", "")
         genre = doc.metadata.get("Genre", "Unknown")
+        imdb_rating = doc.metadata.get("IMDB_Rating", "N/A")
+        certificate = doc.metadata.get("Certificate", "N/A")
         poster_url = doc.metadata.get("Poster_Link", "")
 
         cols = st.columns([1, 3])
@@ -142,12 +158,13 @@ def show_movie_recommendations(title, top_k=3):
         with cols[1]:
             st.markdown(f"**{i}. {rec_title}**")
             st.markdown(f"Genre: {genre}")
+            st.markdown(f"IMDb Rating: {imdb_rating}")
+            st.markdown(f"Certificate: {certificate}")
         st.markdown("---")
 
 # ============================================================== #
-# 💬 Fungsi utama chatbot
+# 💬 Chatbot utama
 # ============================================================== #
-
 def chat_imdb(question, history):
     agent = create_react_agent(
         model=llm, tools=tools,
@@ -176,9 +193,8 @@ def chat_imdb(question, history):
     }
 
 # ============================================================== #
-# 🎨 Tampilan Streamlit
+# 🎨 Streamlit Layout
 # ============================================================== #
-
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
 with st.sidebar:
@@ -214,8 +230,8 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film visual berdasarkan genre
-            show_movie_recommendations(prompt, top_k=3)
+            # Tampilkan rekomendasi multi-kriteria
+            show_movie_recommendations_advanced(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
         st.write(f"Input tokens: {response['total_input_tokens']}")
