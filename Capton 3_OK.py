@@ -72,6 +72,7 @@ qdrant = QdrantVectorStore.from_existing_collection(
 
 @tool
 def get_relevant_docs(question):
+    """Gunakan tool ini untuk mencari dokumen film terkait."""
     return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
@@ -114,7 +115,7 @@ def get_similar_movies_by_genre(title, top_k=3):
             if len(recommendations) >= top_k:
                 break
 
-        return recommendations
+        return recommendations  # langsung kembalikan list dokumen
 
     except Exception as e:
         return []
@@ -213,7 +214,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film dengan poster
+            # Tampilkan rekomendasi film visual berdasarkan genre
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
