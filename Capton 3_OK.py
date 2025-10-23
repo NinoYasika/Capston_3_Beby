@@ -81,7 +81,7 @@ tools = [get_relevant_docs]
 # 🧠 Fungsi rekomendasi film unik (3 hasil berbeda)
 # ==============================================================
 
-def get_similar_movies(title, top_k=2):
+def get_similar_movies(title, top_k=3):
     try:
         similar_docs = qdrant.similarity_search(title, k=top_k + 50)
 
