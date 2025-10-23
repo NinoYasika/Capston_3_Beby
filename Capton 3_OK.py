@@ -83,10 +83,19 @@ def get_relevant_docs(question):
 
 tools = [get_relevant_docs]
 
+# --- Fungsi rekomendasi film dengan filter unik ---
 def get_similar_movies(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=top_k + 1)
-        filtered = [doc for doc in similar_docs if title.lower() not in doc.page_content.lower()]
+        similar_docs = qdrant.similarity_search(title, k=top_k + 5)
+        unique_titles = set()
+        filtered = []
+        for doc in similar_docs:
+            movie_title = doc.metadata.get("Series_Title", "").strip().lower()
+            # Hindari hasil duplikat atau film yang sama
+            if movie_title != title.lower() and movie_title not in unique_titles:
+                unique_titles.add(movie_title)
+                filtered.append(doc)
+
         recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
         if recommendations:
             return recommendations
@@ -95,6 +104,7 @@ def get_similar_movies(title, top_k=3):
     except Exception as e:
         return [f"Error saat mencari rekomendasi: {str(e)}"]
 
+# --- Fungsi utama chatbot ---
 def chat_imdb(question, history):
     agent = create_react_agent(
         model=llm,
