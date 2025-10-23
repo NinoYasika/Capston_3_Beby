@@ -23,6 +23,45 @@ embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API
 collection_name = "imdb_movies"
 
 # ============================================================== #
+# 🌙 Dark mode custom CSS
+# ============================================================== #
+
+dark_mode_css = """
+<style>
+/* Background & text */
+body, .stApp {
+    background-color: #0E1117;
+    color: #F5F5F5;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    background-color: #1C1E24;
+    color: #F5F5F5;
+}
+
+/* Chat messages */
+.st-chat-message {
+    background-color: #1C1E24 !important;
+    color: #F5F5F5 !important;
+}
+
+/* Expander */
+.stExpander {
+    background-color: #1C1E24 !important;
+    color: #F5F5F5 !important;
+}
+
+/* Columns text */
+.css-1d391kg p {
+    color: #F5F5F5;
+}
+</style>
+"""
+
+st.markdown(dark_mode_css, unsafe_allow_html=True)
+
+# ============================================================== #
 # 🧩 Membaca CSV dan Upload ke Qdrant
 # ============================================================== #
 
@@ -73,7 +112,16 @@ qdrant = QdrantVectorStore.from_existing_collection(
 # ============================================================== #
 
 @tool
-def get_relevant_docs(question):
+def get_relevant_docs(question: str) -> list:
+    """
+    Tool untuk mencari dokumen film relevan di Qdrant berdasarkan pertanyaan atau judul film.
+
+    Args:
+        question (str): Pertanyaan pengguna atau judul film.
+
+    Returns:
+        list: List dokumen film teratas yang relevan dengan pertanyaan.
+    """
     return qdrant.similarity_search(question, k=50)
 
 tools = [get_relevant_docs]
@@ -83,14 +131,6 @@ tools = [get_relevant_docs]
 # ============================================================== #
 
 def get_similar_movies(title_or_question, top_k=3):
-    """
-    Rekomendasi 3 film paling relevan berdasarkan:
-    - Kemiripan cerita (overview)
-    - Genre
-    - Certificate
-    - IMDb Rating
-    Film utama tidak muncul.
-    """
     try:
         docs = qdrant.similarity_search(title_or_question, k=50)
         if not docs:
@@ -99,12 +139,9 @@ def get_similar_movies(title_or_question, top_k=3):
         def normalize_title(title):
             return re.sub(r'\s+', ' ', title.strip().lower())
 
-        input_norm = normalize_title(title_or_question)
-
         main_doc_title = docs[0].metadata.get("Series_Title", "")
         main_norm = normalize_title(main_doc_title)
 
-        # Ranking berdasarkan multi-kriteria
         scored_docs = []
         for doc in docs:
             doc_title = doc.metadata.get("Series_Title", "")
@@ -112,7 +149,6 @@ def get_similar_movies(title_or_question, top_k=3):
                 continue
 
             score = 0
-
             # Genre overlap
             genre_input = docs[0].metadata.get("Genre", "").lower().split(", ")
             genre_doc = doc.metadata.get("Genre", "").lower().split(", ")
@@ -137,10 +173,7 @@ def get_similar_movies(title_or_question, top_k=3):
 
             scored_docs.append((score, doc))
 
-        # Sort descending berdasarkan score
         scored_docs.sort(key=lambda x: x[0], reverse=True)
-
-        # Ambil top_k
         recommendations = [doc for score, doc in scored_docs[:top_k]]
         return recommendations
 
