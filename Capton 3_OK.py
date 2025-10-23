@@ -72,6 +72,7 @@ qdrant = QdrantVectorStore.from_existing_collection(
 # 🎬 Tool dan fungsi chatbot
 # ============================================================== #
 
+# Tool untuk mencari dokumen film relevan di Qdrant
 @tool
 def get_relevant_docs(question: str) -> list:
     return qdrant.similarity_search(question, k=50)
