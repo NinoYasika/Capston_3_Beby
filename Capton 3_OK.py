@@ -1,8 +1,11 @@
 import os
 import re
+import subprocess
+import sys
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
+from difflib import get_close_matches
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain.tools import tool
@@ -11,7 +14,16 @@ from langchain_core.messages import ToolMessage
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# --- Load environment ---
+
+# ==============================================================
+# Pastikan scikit-learn terinstal
+# ==============================================================
+subprocess.run([sys.executable, "-m", "pip", "install", "scikit-learn"], check=False)
+
+
+# ==============================================================
+# Load environment variables
+# ==============================================================
 load_dotenv()
 
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
@@ -22,9 +34,10 @@ llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
-# ============================================================== #
-# Load CSV dan Upload ke Qdrant
-# ============================================================== #
+
+# ==============================================================
+# Load CSV dan upload ke Qdrant
+# ==============================================================
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
@@ -34,12 +47,14 @@ def load_and_upload_csv_to_qdrant():
 
     df = pd.read_csv(csv_path)
     df["combined_text"] = (
-        "Title: " + df["Series_Title"].fillna("") + ". " +
-        "Genre: " + df["Genre"].fillna("") + ". " +
-        "Overview: " + df["Overview"].fillna("") + ". " +
-        "Director: " + df["Director"].fillna("") + ". " +
-        "Stars: " + df["Star1"].fillna("") + ", " + df["Star2"].fillna("") + ", " +
-        df["Star3"].fillna("") + ", " + df["Star4"].fillna("")
+        "Title: " + df["Series_Title"].fillna("") + ". "
+        + "Genre: " + df["Genre"].fillna("") + ". "
+        + "Overview: " + df["Overview"].fillna("") + ". "
+        + "Director: " + df["Director"].fillna("") + ". "
+        + "Stars: " + df["Star1"].fillna("") + ", "
+        + df["Star2"].fillna("") + ", "
+        + df["Star3"].fillna("") + ", "
+        + df["Star4"].fillna("")
     )
 
     texts = df["combined_text"].tolist()
@@ -61,56 +76,52 @@ def load_and_upload_csv_to_qdrant():
 load_and_upload_csv_to_qdrant()
 
 qdrant = QdrantVectorStore.from_existing_collection(
-    embedding=embeddings, collection_name=collection_name,
-    url=QDRANT_URL, api_key=QDRANT_API_KEY
+    embedding=embeddings,
+    collection_name=collection_name,
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY
 )
 
-# ============================================================== #
+
+# ==============================================================
 # Tool pencarian dokumen
-# ============================================================== #
+# ==============================================================
 @tool
 def get_relevant_docs(question: str) -> list:
-    """
-    Mencari dokumen film terkait berdasarkan pertanyaan pengguna.
-
-    Args:
-        question (str): Pertanyaan atau judul film dari pengguna.
-
-    Returns:
-        list: List dokumen dari Qdrant yang relevan.
-    """
+    """Mencari dokumen film terkait berdasarkan pertanyaan pengguna."""
     return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
 
-# ============================================================== #
-# Fungsi rekomendasi film multi-kriteria
-# ============================================================== #
+
+# ==============================================================
+# Fungsi rekomendasi film multi-kriteria (versi perbaikan)
+# ==============================================================
 def get_similar_movies_advanced(title: str, top_k: int = 3) -> list:
     """
     Rekomendasi film berdasarkan Genre, IMDb Rating, Certificate, dan kemiripan cerita.
-
-    Args:
-        title (str): Judul film input.
-        top_k (int): Jumlah film rekomendasi.
-
-    Returns:
-        list: List dokumen film terbaik berdasarkan skor gabungan.
+    Menggunakan fuzzy matching agar lebih toleran pada variasi judul.
     """
     try:
-        similar_docs = qdrant.similarity_search(title, k=50)
+        similar_docs = qdrant.similarity_search(title, k=80)
+        if not similar_docs:
+            return []
 
         def normalize_text(t):
             return re.sub(r'[^a-z0-9 ]', '', str(t).lower().strip())
 
+        all_titles = [normalize_text(doc.metadata.get("Series_Title", "")) for doc in similar_docs]
         title_norm = normalize_text(title)
-        input_doc = None
-        for doc in similar_docs:
-            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
-                input_doc = doc
-                break
-        if not input_doc:
-            return []
+        closest_match = get_close_matches(title_norm, all_titles, n=1, cutoff=0.5)
+
+        if not closest_match:
+            input_doc = similar_docs[0]
+        else:
+            match_title = closest_match[0]
+            input_doc = next(
+                (doc for doc in similar_docs if normalize_text(doc.metadata.get("Series_Title", "")) == match_title),
+                similar_docs[0]
+            )
 
         input_genres = [g.strip().lower() for g in input_doc.metadata.get("Genre", "").split(",")]
         input_overview = input_doc.metadata.get("Overview", "")
@@ -118,29 +129,38 @@ def get_similar_movies_advanced(title: str, top_k: int = 3) -> list:
         scored_docs = []
 
         for doc in similar_docs:
-            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
+            if normalize_text(doc.metadata.get("Series_Title", "")) == normalize_text(
+                    input_doc.metadata.get("Series_Title", "")):
                 continue
 
-            # Skor genre
+            # Genre similarity
             doc_genres = [g.strip().lower() for g in doc.metadata.get("Genre", "").split(",")]
             genre_score = len(set(input_genres) & set(doc_genres)) / max(len(set(input_genres)), 1)
 
-            # Skor IMDb Rating
+            # IMDb rating
             try:
                 imdb_score = float(doc.metadata.get("IMDB_Rating", 0))
             except:
                 imdb_score = 0
-            imdb_score_norm = imdb_score / 10  # skala 0-1
+            imdb_score_norm = imdb_score / 10
 
-            # Skor Certificate
+            # Certificate similarity
             cert_score = 1 if doc.metadata.get("Certificate") == input_doc.metadata.get("Certificate") else 0
 
-            # Skor kemiripan cerita (overview)
-            tfidf = TfidfVectorizer().fit([input_overview, doc.metadata.get("Overview", "")])
-            overview_score = cosine_similarity(tfidf.transform([input_overview]),
-                                              tfidf.transform([doc.metadata.get("Overview", "")]))[0][0]
+            # Overview similarity (TF-IDF cosine)
+            tfidf = TfidfVectorizer(stop_words="english").fit([input_overview, doc.metadata.get("Overview", "")])
+            overview_score = cosine_similarity(
+                tfidf.transform([input_overview]),
+                tfidf.transform([doc.metadata.get("Overview", "")])
+            )[0][0]
 
-            total_score = 0.4 * genre_score + 0.3 * imdb_score_norm + 0.1 * cert_score + 0.2 * overview_score
+            total_score = (
+                0.4 * genre_score +
+                0.3 * imdb_score_norm +
+                0.1 * cert_score +
+                0.2 * overview_score
+            )
+
             scored_docs.append((total_score, doc))
 
         scored_docs.sort(key=lambda x: x[0], reverse=True)
@@ -151,6 +171,10 @@ def get_similar_movies_advanced(title: str, top_k: int = 3) -> list:
         st.error(f"Error recommendation: {str(e)}")
         return []
 
+
+# ==============================================================
+# Menampilkan rekomendasi di UI
+# ==============================================================
 def show_movie_recommendations_advanced(title: str, top_k: int = 3):
     recommendations = get_similar_movies_advanced(title, top_k=top_k)
     if not recommendations:
@@ -170,7 +194,7 @@ def show_movie_recommendations_advanced(title: str, top_k: int = 3):
             if poster_url:
                 st.image(poster_url, width=100)
             else:
-                st.write("No poster")
+                st.write("No poster available")
         with cols[1]:
             st.markdown(f"**{i}. {rec_title}**")
             st.markdown(f"Genre: {genre}")
@@ -178,12 +202,14 @@ def show_movie_recommendations_advanced(title: str, top_k: int = 3):
             st.markdown(f"Certificate: {certificate}")
         st.markdown("---")
 
-# ============================================================== #
+
+# ==============================================================
 # Chatbot utama
-# ============================================================== #
+# ==============================================================
 def chat_imdb(question: str, history: list) -> dict:
     agent = create_react_agent(
-        model=llm, tools=tools,
+        model=llm,
+        tools=tools,
         prompt="You are a movie expert. Use the tools to answer accurately about movies."
     )
     result = agent.invoke({"messages": [{"role": "user", "content": question}]})
@@ -202,15 +228,17 @@ def chat_imdb(question: str, history: list) -> dict:
     tool_messages = [msg.content for msg in result["messages"] if isinstance(msg, ToolMessage)]
 
     return {
-        "answer": answer, "price": price,
+        "answer": answer,
+        "price": price,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "tool_messages": tool_messages
     }
 
-# ============================================================== #
+
+# ==============================================================
 # Streamlit Layout
-# ============================================================== #
+# ==============================================================
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
 with st.sidebar:
