@@ -22,9 +22,9 @@ llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
-# ==============================================================
+# ============================================================== #
 # 🧩 Membaca CSV dan Upload ke Qdrant
-# ==============================================================
+# ============================================================== #
 
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
@@ -66,65 +66,86 @@ qdrant = QdrantVectorStore.from_existing_collection(
     url=QDRANT_URL, api_key=QDRANT_API_KEY
 )
 
-# ==============================================================
+# ============================================================== #
 # 🎬 Tool dan fungsi chatbot
-# ==============================================================
+# ============================================================== #
 
 @tool
 def get_relevant_docs(question):
-    """Gunakan tool ini untuk mencari dokumen film terkait."""
     return qdrant.similarity_search(question, k=5)
 
 tools = [get_relevant_docs]
 
-# ==============================================================
-# 🧠 Fungsi rekomendasi film unik (3 hasil berbeda)
-# ==============================================================
+# ============================================================== #
+# 🧠 Fungsi rekomendasi film berdasarkan genre
+# ============================================================== #
 
-def get_similar_movies(title, top_k=3):
+def get_similar_movies_by_genre(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=top_k + 50)
+        similar_docs = qdrant.similarity_search(title, k=50)
 
         def normalize_text(t):
             return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
 
         title_norm = normalize_text(title)
+        input_genre = ""
+        for doc in similar_docs:
+            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
+                input_genre = doc.metadata.get("Genre", "")
+                break
+
+        input_genres = [g.strip().lower() for g in input_genre.split(",")]
+
         unique_titles = set()
-        filtered = []
+        recommendations = []
 
         for doc in similar_docs:
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(raw_title)
-            if movie_title != title_norm and movie_title not in unique_titles:
+            if movie_title == title_norm or movie_title in unique_titles:
+                continue
+
+            doc_genre = doc.metadata.get("Genre", "")
+            doc_genres = [g.strip().lower() for g in doc_genre.split(",")]
+            if any(g in input_genres for g in doc_genres):
                 unique_titles.add(movie_title)
-                filtered.append(doc)
-            if len(filtered) >= top_k:
+                recommendations.append(doc)
+
+            if len(recommendations) >= top_k:
                 break
 
-        recommendations = [d.metadata["Series_Title"] for d in filtered[:top_k]]
-        recommendations = [r for r in recommendations if normalize_text(r) != title_norm]
-
-        # Tambah hasil cadangan jika masih kurang
-        if len(recommendations) < top_k:
-            for d in similar_docs:
-                title_extra = normalize_text(d.metadata.get("Series_Title", ""))
-                if title_extra not in unique_titles and title_extra != title_norm:
-                    recommendations.append(d.metadata["Series_Title"])
-                    unique_titles.add(title_extra)
-                if len(recommendations) >= top_k:
-                    break
-
-        while len(recommendations) < top_k:
-            recommendations.append("(Belum cukup data relevan)")
-
-        return recommendations[:top_k]
+        return recommendations
 
     except Exception as e:
-        return [f"Error: {str(e)}"]
+        return []
 
-# ==============================================================
+def show_movie_recommendations(title, top_k=3):
+    recommendations = get_similar_movies_by_genre(title, top_k=top_k)
+
+    if not recommendations:
+        st.info("🎬 Tidak ada film serupa berdasarkan genre.")
+        return
+
+    st.subheader("🎬 Rekomendasi Film Serupa:")
+    for i, doc in enumerate(recommendations, start=1):
+        rec_title = doc.metadata.get("Series_Title", "")
+        genre = doc.metadata.get("Genre", "Unknown")
+        poster_url = doc.metadata.get("Poster_Link", "")
+
+        cols = st.columns([1, 3])
+        with cols[0]:
+            if poster_url:
+                st.image(poster_url, width=100)
+            else:
+                st.write("No poster")
+        with cols[1]:
+            st.markdown(f"**{i}. {rec_title}**")
+            st.markdown(f"Genre: {genre}")
+        st.markdown("---")
+
+# ============================================================== #
 # 💬 Fungsi utama chatbot
-# ==============================================================
+# ============================================================== #
 
 def chat_imdb(question, history):
     agent = create_react_agent(
@@ -153,9 +174,9 @@ def chat_imdb(question, history):
         "tool_messages": tool_messages
     }
 
-# ==============================================================
+# ============================================================== #
 # 🎨 Tampilan Streamlit
-# ==============================================================
+# ============================================================== #
 
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
@@ -192,10 +213,8 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            st.markdown("---")
-            st.subheader("🎬 Rekomendasi Film Serupa:")
-            for i, rec in enumerate(get_similar_movies(prompt), start=1):
-                st.markdown(f"{i}. **{rec}**")
+            # Tampilkan rekomendasi film dengan poster
+            show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
         st.write(f"Input tokens: {response['total_input_tokens']}")
