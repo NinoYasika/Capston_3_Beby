@@ -8,7 +8,6 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
-from langchain_core.messages import ToolMessage
 import openai
 from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
@@ -74,7 +73,16 @@ qdrant = QdrantVectorStore.from_existing_collection(
 # Tool & fungsi chatbot
 # ============================================================== #
 @tool
-def get_relevant_docs(question):
+def get_relevant_docs(question: str):
+    """
+    Cari dokumen film relevan dari Qdrant berdasarkan pertanyaan user.
+
+    Args:
+        question (str): Judul film atau pertanyaan tentang film.
+
+    Returns:
+        list: List dokumen terkait dari Qdrant.
+    """
     results = qdrant.similarity_search(question, k=5)
     return results
 
