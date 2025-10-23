@@ -86,27 +86,29 @@ tools = [get_relevant_docs]
 # --- Fungsi rekomendasi film dengan filter unik dan hasil berbeda ---
 def get_similar_movies(title, top_k=3):
     try:
-        # Ambil lebih banyak hasil agar bisa disaring
+        # Ambil banyak hasil agar bisa difilter
         similar_docs = qdrant.similarity_search(title, k=top_k + 10)
         unique_titles = set()
         filtered = []
 
+        # Normalisasi input (hilangkan spasi dan huruf besar)
+        title_norm = title.strip().lower()
+
         for doc in similar_docs:
             movie_title = doc.metadata.get("Series_Title", "").strip().lower()
-            # Hindari film yang sama atau mirip dengan input utama
+            # Hindari film yang sama atau mirip (substring)
             if (
-                movie_title != title.lower()
-                and title.lower() not in movie_title
+                movie_title != title_norm
+                and title_norm not in movie_title
+                and movie_title not in title_norm
                 and movie_title not in unique_titles
             ):
                 unique_titles.add(movie_title)
                 filtered.append(doc)
-            # Berhenti jika sudah cukup hasil
             if len(filtered) >= top_k:
                 break
 
         recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
-
         if recommendations:
             return recommendations
         else:
@@ -192,7 +194,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             # --- Rekomendasi film serupa ---
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
-            recommendations = get_similar_movies(prompt)
+            recommendations = get_similar_movies(prompt, top_k=3)
             for idx, rec in enumerate(recommendations, start=1):
                 st.markdown(f"{idx}. **{rec}**")
 
