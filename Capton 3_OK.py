@@ -37,10 +37,12 @@ def load_and_upload_csv_to_qdrant():
     df["combined_text"] = (
         "Title: " + df["Series_Title"].fillna("") + ". " +
         "Genre: " + df["Genre"].fillna("") + ". " +
+        "Certificate: " + df["Certificate"].fillna("") + ". " +
         "Overview: " + df["Overview"].fillna("") + ". " +
         "Director: " + df["Director"].fillna("") + ". " +
         "Stars: " + df["Star1"].fillna("") + ", " + df["Star2"].fillna("") + ", " +
-        df["Star3"].fillna("") + ", " + df["Star4"].fillna("")
+        df["Star3"].fillna("") + ", " + df["Star4"].fillna("") + ". " +
+        "IMDb Rating: " + df["IMDB_Rating"].fillna("").astype(str)
     )
 
     texts = df["combined_text"].tolist()
@@ -72,57 +74,82 @@ qdrant = QdrantVectorStore.from_existing_collection(
 
 @tool
 def get_relevant_docs(question):
-    """Gunakan tool ini untuk mencari dokumen film terkait."""
-    return qdrant.similarity_search(question, k=5)
+    return qdrant.similarity_search(question, k=50)
 
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film berdasarkan kemiripan teks
+# 🧠 Fungsi rekomendasi film berdasarkan multi-kriteria
 # ============================================================== #
 
 def get_similar_movies(title_or_question, top_k=3):
     """
-    Rekomendasi film berdasarkan kemiripan teks.
-    Memastikan film utama tidak muncul.
+    Rekomendasi 3 film paling relevan berdasarkan:
+    - Kemiripan cerita (overview)
+    - Genre
+    - Certificate
+    - IMDb Rating
+    Film utama tidak muncul.
     """
     try:
-        similar_docs = qdrant.similarity_search(title_or_question, k=50)
+        docs = qdrant.similarity_search(title_or_question, k=50)
+        if not docs:
+            return []
 
-        # Tentukan judul utama (film yang paling relevan)
-        if similar_docs:
-            main_doc = similar_docs[0]
-            main_title = main_doc.metadata.get("Series_Title", "").strip().lower()
-        else:
-            main_title = title_or_question.strip().lower()
+        def normalize_title(title):
+            return re.sub(r'\s+', ' ', title.strip().lower())
 
-        recommendations = []
-        unique_titles = set()
+        input_norm = normalize_title(title_or_question)
 
-        for doc in similar_docs:
-            doc_title = doc.metadata.get("Series_Title", "").strip()
-            if not doc_title:
-                continue
-            doc_norm = doc_title.lower()
+        main_doc_title = docs[0].metadata.get("Series_Title", "")
+        main_norm = normalize_title(main_doc_title)
 
-            # Skip film utama dan duplikat
-            if doc_norm == main_title or doc_norm in unique_titles:
+        # Ranking berdasarkan multi-kriteria
+        scored_docs = []
+        for doc in docs:
+            doc_title = doc.metadata.get("Series_Title", "")
+            if not doc_title or normalize_title(doc_title) == main_norm:
                 continue
 
-            unique_titles.add(doc_norm)
-            recommendations.append(doc)
+            score = 0
 
-            if len(recommendations) >= top_k:
-                break
+            # Genre overlap
+            genre_input = docs[0].metadata.get("Genre", "").lower().split(", ")
+            genre_doc = doc.metadata.get("Genre", "").lower().split(", ")
+            genre_score = len(set(genre_input) & set(genre_doc)) / max(len(set(genre_input)), 1)
+            score += genre_score * 0.4
 
+            # Certificate match
+            cert_input = docs[0].metadata.get("Certificate", "").lower()
+            cert_doc = doc.metadata.get("Certificate", "").lower()
+            if cert_input and cert_input == cert_doc:
+                score += 0.2
+
+            # IMDb rating closeness
+            try:
+                rating_input = float(docs[0].metadata.get("IMDB_Rating", 0))
+                rating_doc = float(doc.metadata.get("IMDB_Rating", 0))
+                rating_diff = abs(rating_input - rating_doc)
+                rating_score = max(0, 1 - rating_diff / 10)
+                score += rating_score * 0.4
+            except:
+                pass
+
+            scored_docs.append((score, doc))
+
+        # Sort descending berdasarkan score
+        scored_docs.sort(key=lambda x: x[0], reverse=True)
+
+        # Ambil top_k
+        recommendations = [doc for score, doc in scored_docs[:top_k]]
         return recommendations
 
     except Exception as e:
+        st.error(f"❌ Error mencari rekomendasi: {e}")
         return []
 
 def show_movie_recommendations(title_or_question, top_k=3):
     recommendations = get_similar_movies(title_or_question, top_k=top_k)
-
     if not recommendations:
         st.info("🎬 Tidak ada film serupa ditemukan.")
         return
@@ -132,6 +159,8 @@ def show_movie_recommendations(title_or_question, top_k=3):
         rec_title = doc.metadata.get("Series_Title", "")
         year = doc.metadata.get("Released_Year", "Unknown")
         genre = doc.metadata.get("Genre", "Unknown")
+        cert = doc.metadata.get("Certificate", "Unknown")
+        rating = doc.metadata.get("IMDB_Rating", "Unknown")
         poster_url = doc.metadata.get("Poster_Link", "")
 
         cols = st.columns([1, 3])
@@ -142,7 +171,7 @@ def show_movie_recommendations(title_or_question, top_k=3):
                 st.write("No poster")
         with cols[1]:
             st.markdown(f"**{i}. {rec_title} ({year})**")
-            st.markdown(f"Genre: {genre}")
+            st.markdown(f"Genre: {genre} | Certificate: {cert} | IMDb: {rating}")
         st.markdown("---")
 
 # ============================================================== #
@@ -215,7 +244,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film visual berdasarkan kemiripan
+            # Tampilkan rekomendasi film visual berdasarkan multi-kriteria
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
