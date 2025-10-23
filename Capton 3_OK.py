@@ -78,53 +78,49 @@ def get_relevant_docs(question):
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film berdasarkan genre
+# 🧠 Fungsi rekomendasi film berdasarkan kemiripan teks
 # ============================================================== #
 
-def get_similar_movies_by_genre(title, top_k=3):
+def get_similar_movies(title_or_question, top_k=3):
+    """
+    Rekomendasi film berdasarkan kemiripan teks gabungan:
+    title, overview, genre, director, cast, dsb.
+    """
     try:
-        similar_docs = qdrant.similarity_search(title, k=50)
+        # Ambil 50 dokumen teratas
+        similar_docs = qdrant.similarity_search(title_or_question, k=50)
 
         def normalize_text(t):
             return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
 
-        title_norm = normalize_text(title)
-        input_genre = ""
-        for doc in similar_docs:
-            if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
-                input_genre = doc.metadata.get("Genre", "")
-                break
-
-        input_genres = [g.strip().lower() for g in input_genre.split(",")]
-
+        title_norm = normalize_text(title_or_question)
         unique_titles = set()
         recommendations = []
 
         for doc in similar_docs:
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(raw_title)
-            if movie_title == title_norm or movie_title in unique_titles:
+
+            # Skip judul yang sama
+            if movie_title in unique_titles or movie_title == title_norm:
                 continue
 
-            doc_genre = doc.metadata.get("Genre", "")
-            doc_genres = [g.strip().lower() for g in doc_genre.split(",")]
-            if any(g in input_genres for g in doc_genres):
-                unique_titles.add(movie_title)
-                recommendations.append(doc)
+            unique_titles.add(movie_title)
+            recommendations.append(doc)
 
             if len(recommendations) >= top_k:
                 break
 
-        return recommendations  # langsung kembalikan list dokumen
+        return recommendations
 
     except Exception as e:
         return []
 
-def show_movie_recommendations(title, top_k=3):
-    recommendations = get_similar_movies_by_genre(title, top_k=top_k)
+def show_movie_recommendations(title_or_question, top_k=3):
+    recommendations = get_similar_movies(title_or_question, top_k=top_k)
 
     if not recommendations:
-        st.info("🎬 Tidak ada film serupa berdasarkan genre.")
+        st.info("🎬 Tidak ada film serupa ditemukan.")
         return
 
     st.subheader("🎬 Rekomendasi Film Serupa:")
@@ -214,7 +210,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film visual berdasarkan genre
+            # Tampilkan rekomendasi film visual berdasarkan kemiripan
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
