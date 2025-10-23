@@ -7,6 +7,7 @@ from langchain_qdrant import QdrantVectorStore
 from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
+import re
 
 # --- Load environment file ---
 load_dotenv()
@@ -83,36 +84,43 @@ def get_relevant_docs(question):
 
 tools = [get_relevant_docs]
 
-# --- Fungsi rekomendasi film dengan filter unik dan hasil berbeda ---
+# --- Fungsi rekomendasi film dengan filter kuat ---
+def normalize_text(text):
+    return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
+
 def get_similar_movies(title, top_k=3):
     try:
-        # Ambil banyak hasil agar bisa difilter
-        similar_docs = qdrant.similarity_search(title, k=top_k + 10)
+        similar_docs = qdrant.similarity_search(title, k=top_k + 20)
         unique_titles = set()
         filtered = []
 
-        # Normalisasi input (hilangkan spasi dan huruf besar)
-        title_norm = title.strip().lower()
+        title_norm = normalize_text(title)
 
         for doc in similar_docs:
-            movie_title = doc.metadata.get("Series_Title", "").strip().lower()
-            # Hindari film yang sama atau mirip (substring)
+            movie_title_raw = doc.metadata.get("Series_Title", "")
+            movie_title = normalize_text(movie_title_raw)
+
+            # Filter: hilangkan judul yang sama atau sangat mirip
             if (
                 movie_title != title_norm
-                and title_norm not in movie_title
                 and movie_title not in title_norm
+                and title_norm not in movie_title
+                and not movie_title.startswith(title_norm)
+                and not title_norm.startswith(movie_title)
                 and movie_title not in unique_titles
             ):
                 unique_titles.add(movie_title)
                 filtered.append(doc)
+
             if len(filtered) >= top_k:
                 break
 
-        recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
-        if recommendations:
-            return recommendations
-        else:
+        if not filtered:
             return ["Tidak ditemukan film mirip dalam database."]
+
+        recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
+        return recommendations
+
     except Exception as e:
         return [f"Error saat mencari rekomendasi: {str(e)}"]
 
