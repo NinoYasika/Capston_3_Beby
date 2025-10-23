@@ -82,10 +82,6 @@ tools = [get_relevant_docs]
 # ============================================================== #
 
 def get_similar_movies(title_or_question, top_k=3):
-    """
-    Rekomendasi film berdasarkan kemiripan teks gabungan:
-    title, overview, genre, director, cast, dsb.
-    """
     try:
         # Ambil 50 dokumen teratas
         similar_docs = qdrant.similarity_search(title_or_question, k=50)
@@ -101,8 +97,8 @@ def get_similar_movies(title_or_question, top_k=3):
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(raw_title)
 
-            # Skip judul yang sama
-            if movie_title in unique_titles or movie_title == title_norm:
+            # Skip judul yang sama dengan input
+            if movie_title == title_norm or movie_title in unique_titles:
                 continue
 
             unique_titles.add(movie_title)
