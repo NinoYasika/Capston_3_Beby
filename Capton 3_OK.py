@@ -1,4 +1,5 @@
 import os
+import re
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -7,7 +8,6 @@ from langchain_qdrant import QdrantVectorStore
 from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
-import re
 
 # --- Load environment file ---
 load_dotenv()
@@ -84,23 +84,23 @@ def get_relevant_docs(question):
 
 tools = [get_relevant_docs]
 
-# --- Fungsi rekomendasi film dengan filter kuat ---
+# --- Fungsi normalisasi judul untuk perbandingan ---
 def normalize_text(text):
     return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
 
+# --- Fungsi rekomendasi film yang memastikan 3 hasil unik dan berbeda ---
 def get_similar_movies(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=top_k + 20)
+        similar_docs = qdrant.similarity_search(title, k=top_k + 30)  # ambil lebih banyak hasil
+        title_norm = normalize_text(title)
         unique_titles = set()
         filtered = []
-
-        title_norm = normalize_text(title)
 
         for doc in similar_docs:
             movie_title_raw = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(movie_title_raw)
 
-            # Filter: hilangkan judul yang sama atau sangat mirip
+            # Lewati film yang sama atau mirip dengan film utama
             if (
                 movie_title != title_norm
                 and movie_title not in title_norm
@@ -112,15 +112,20 @@ def get_similar_movies(title, top_k=3):
                 unique_titles.add(movie_title)
                 filtered.append(doc)
 
+            # Tidak langsung break — kumpulkan semua lalu potong ke 3 nanti
             if len(filtered) >= top_k:
                 break
 
-        if not filtered:
-            return ["Tidak ditemukan film mirip dalam database."]
+        # Jika hasil kurang dari 3, ambil sisanya meski kemiripan lebih rendah
+        if len(filtered) < top_k:
+            extra_docs = [doc for doc in similar_docs if normalize_text(doc.metadata.get("Series_Title", "")) not in unique_titles]
+            filtered.extend(extra_docs[:top_k - len(filtered)])
 
         recommendations = [doc.metadata["Series_Title"] for doc in filtered[:top_k]]
-        return recommendations
-
+        if recommendations:
+            return recommendations
+        else:
+            return ["Tidak ditemukan film mirip dalam database."]
     except Exception as e:
         return [f"Error saat mencari rekomendasi: {str(e)}"]
 
@@ -199,7 +204,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(answer)
             st.session_state.messages.append({"role": "AI", "content": answer})
 
-            # --- Rekomendasi film serupa ---
+            # --- Rekomendasi film serupa (3 unik) ---
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
             recommendations = get_similar_movies(prompt, top_k=3)
