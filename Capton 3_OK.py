@@ -35,14 +35,15 @@ def load_and_upload_csv_to_qdrant():
         st.stop()
 
     df = pd.read_csv(csv_path)
+
+    # Gabungkan kolom penting menjadi satu teks untuk embedding
     df["combined_text"] = (
         "Title: " + df["Series_Title"].fillna("") + ". " +
         "Genre: " + df["Genre"].fillna("") + ". " +
         "Overview: " + df["Overview"].fillna("") + ". " +
         "Director: " + df["Director"].fillna("") + ". " +
-        "Stars: " + df["Star1"].fillna("") + ", " +
-        df["Star2"].fillna("") + ", " + df["Star3"].fillna("") + ", " +
-        df["Star4"].fillna("")
+        "Stars: " + df["Star1"].fillna("") + ", " + df["Star2"].fillna("") + ", " +
+        df["Star3"].fillna("") + ", " + df["Star4"].fillna("")
     )
 
     texts = df["combined_text"].tolist()
@@ -84,59 +85,54 @@ def get_relevant_docs(question):
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film serupa (3 hasil unik & tidak sama)
+# 🧠 Fungsi rekomendasi film serupa (3 hasil unik & berbeda)
 # ============================================================== #
 
 def get_similar_movies(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=top_k + 20)
+        similar_docs = qdrant.similarity_search(title, k=top_k + 50)
 
-        # Fungsi bantu normalisasi teks
         def normalize_text(text):
-            text = text.lower().strip()
-            text = re.sub(r'[^a-z0-9 ]', '', text)
-            text = re.sub(r'\bthe\b', '', text)
-            text = re.sub(r'\spart\s*[ivx]+', '', text)  # hapus "part ii" dll
-            return text.strip()
+            return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
 
         title_norm = normalize_text(title)
         unique_titles = set()
         filtered = []
 
+        # 1️⃣ Filter hasil agar tidak duplikat dan tidak sama
         for doc in similar_docs:
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(raw_title)
 
-            # Lewati film utama & duplikat
-            if (
-                movie_title not in unique_titles
-                and movie_title != title_norm
-                and title_norm not in movie_title
-                and movie_title not in title_norm
-            ):
+            if movie_title != title_norm and movie_title not in unique_titles:
                 unique_titles.add(movie_title)
                 filtered.append(doc)
-
-            if len(filtered) >= top_k:
+            if len(filtered) >= top_k + 5:  # ambil lebih banyak dulu untuk disaring
                 break
 
-        # Tambah cadangan jika hasil kurang dari 3
-        if len(filtered) < top_k:
-            extras = [
-                d for d in similar_docs
-                if normalize_text(d.metadata.get("Series_Title", "")) not in unique_titles
-                and normalize_text(d.metadata.get("Series_Title", "")) != title_norm
-            ]
-            filtered.extend(extras[: top_k - len(filtered)])
-
-        # Ambil 3 film unik, pastikan tidak sama dengan film utama
+        # 2️⃣ Ambil 3 film unik berbeda dari judul utama
         recommendations = []
         for doc in filtered:
-            name = doc.metadata["Series_Title"]
-            if normalize_text(name) != title_norm and name not in recommendations:
-                recommendations.append(name)
+            candidate = doc.metadata.get("Series_Title", "")
+            if normalize_text(candidate) != title_norm and candidate not in recommendations:
+                recommendations.append(candidate)
             if len(recommendations) >= top_k:
                 break
+
+        # 3️⃣ Jika hasil kurang dari 3, tambahkan cadangan dari hasil lain
+        if len(recommendations) < top_k:
+            extras = [
+                d.metadata.get("Series_Title", "")
+                for d in similar_docs
+                if normalize_text(d.metadata.get("Series_Title", "")) != title_norm
+                and d.metadata.get("Series_Title", "") not in recommendations
+            ]
+            recommendations.extend(extras[: top_k - len(recommendations)])
+
+        # 4️⃣ Pastikan tidak ada film utama & hasil tetap 3
+        recommendations = [
+            r for r in recommendations if normalize_text(r) != title_norm
+        ][:top_k]
 
         while len(recommendations) < top_k:
             recommendations.append("(Belum cukup data relevan)")
@@ -144,7 +140,8 @@ def get_similar_movies(title, top_k=3):
         return recommendations[:top_k]
 
     except Exception as e:
-        return [f"Error: {str(e)}"]
+        return [f"Error saat mencari rekomendasi: {str(e)}"]
+
 
 # ============================================================== #
 # 💬 Fungsi utama chatbot
@@ -170,7 +167,11 @@ def chat_imdb(question, history):
             total_output_tokens += message.response_metadata["token_usage"].get("completion_tokens", 0)
 
     price = 17000 * (total_input_tokens * 0.15 + total_output_tokens * 0.6) / 1_000_000
-    tool_messages = [msg.content for msg in result["messages"] if isinstance(msg, ToolMessage)]
+
+    tool_messages = [
+        message.content for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    ]
 
     return {
         "answer": answer,
@@ -179,6 +180,7 @@ def chat_imdb(question, history):
         "total_output_tokens": total_output_tokens,
         "tool_messages": tool_messages
     }
+
 
 # ============================================================== #
 # 🎨 Tampilan Streamlit
@@ -220,7 +222,6 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(answer)
             st.session_state.messages.append({"role": "AI", "content": answer})
 
-            # --- Rekomendasi film serupa ---
             st.markdown("---")
             st.subheader("🎬 Rekomendasi Film Serupa:")
             recommendations = get_similar_movies(prompt)
