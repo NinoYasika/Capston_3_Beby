@@ -83,25 +83,25 @@ tools = [get_relevant_docs]
 
 def get_similar_movies(title_or_question, top_k=3):
     try:
-        # Ambil 50 dokumen teratas
         similar_docs = qdrant.similarity_search(title_or_question, k=50)
 
-        def normalize_text(t):
-            return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
+        # Normalisasi untuk perbandingan
+        def normalize_title(title):
+            return re.sub(r'\s+', ' ', title.strip().lower())
 
-        title_norm = normalize_text(title_or_question)
-        unique_titles = set()
+        input_norm = normalize_title(title_or_question)
         recommendations = []
+        unique_titles = set()
 
         for doc in similar_docs:
-            raw_title = doc.metadata.get("Series_Title", "")
-            movie_title = normalize_text(raw_title)
+            doc_title = doc.metadata.get("Series_Title", "").strip()
+            doc_norm = normalize_title(doc_title)
 
-            # Skip judul yang sama dengan input
-            if movie_title == title_norm or movie_title in unique_titles:
+            # Skip film yang sama
+            if doc_norm == input_norm or doc_norm in unique_titles or doc_title == "":
                 continue
 
-            unique_titles.add(movie_title)
+            unique_titles.add(doc_norm)
             recommendations.append(doc)
 
             if len(recommendations) >= top_k:
