@@ -1,6 +1,6 @@
 import os
-import re
 import io
+import re
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -10,30 +10,28 @@ from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
 import openai
-from st_audiorec import st_audiorec
+from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
 
-# --- Load environment file ---
+# --- Load environment ---
 load_dotenv()
-
-# --- Ambil API key ---
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 openai.api_key = OPENAI_API_KEY
 
-# --- Inisialisasi model & embedding ---
+# --- Inisialisasi LLM & embeddings ---
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
 # ============================================================== #
-# Load CSV & upload ke Qdrant (hanya pertama kali)
+# Load CSV & upload ke Qdrant
 # ============================================================== #
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
     if not os.path.exists(csv_path):
-        st.error("❌ File imdb_movies.csv tidak ditemukan di folder proyek.")
+        st.error("❌ File imdb_movies.csv tidak ditemukan.")
         st.stop()
 
     df = pd.read_csv(csv_path)
@@ -58,9 +56,9 @@ def load_and_upload_csv_to_qdrant():
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY
         )
-        st.success("✅ Koleksi 'imdb_movies' berhasil diunggah ke Qdrant!")
+        st.success("✅ Koleksi 'imdb_movies' berhasil diunggah!")
     except Exception as e:
-        st.warning(f"⚠️ Koleksi mungkin sudah ada. Melanjutkan dengan koleksi yang ada. ({str(e)})")
+        st.warning(f"⚠️ Koleksi mungkin sudah ada. Melanjutkan. ({str(e)})")
 
 load_and_upload_csv_to_qdrant()
 
@@ -88,28 +86,20 @@ tools = [get_relevant_docs]
 def get_similar_movies(title, top_k=3):
     try:
         similar_docs = qdrant.similarity_search(title, k=top_k + 50)
-
-        def normalize_text(text):
-            return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
-
+        def normalize_text(text): return re.sub(r'[^a-z0-9 ]', '', text.lower().strip())
         title_norm = normalize_text(title)
         unique_titles = set()
         recommendations = []
-
         for doc in similar_docs:
             candidate = doc.metadata.get("Series_Title", "")
             candidate_norm = normalize_text(candidate)
             if candidate_norm != title_norm and candidate_norm not in unique_titles:
                 unique_titles.add(candidate_norm)
                 recommendations.append(candidate)
-            if len(recommendations) >= top_k:
-                break
-
+            if len(recommendations) >= top_k: break
         while len(recommendations) < top_k:
             recommendations.append("(Belum cukup data relevan)")
-
         return recommendations[:top_k]
-
     except Exception as e:
         return [f"Error saat mencari rekomendasi: {str(e)}"]
 
@@ -126,7 +116,7 @@ def chat_imdb(question):
     return result["messages"][-1].content
 
 # ============================================================== #
-# Tampilan Streamlit
+# Streamlit UI
 # ============================================================== #
 st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wide")
 
@@ -140,17 +130,29 @@ with st.sidebar:
 st.title("🎥 Movie Master Chatbot")
 
 # ========================================================== #
-# Tombol perekam audio langsung interaktif
+# Rekam audio langsung dari browser (streamlit-webrtc)
 # ========================================================== #
-audio_bytes = st_audiorec()
+class AudioProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.audio_bytes = b""
+
+    def recv(self, frame):
+        self.audio_bytes += frame.to_ndarray().tobytes()
+        return frame
+
+webrtc_ctx = webrtc_streamer(
+    key="mic",
+    mode=WebRtcMode.SENDONLY,
+    audio_processor_factory=AudioProcessor,
+    media_stream_constraints={"audio": True, "video": False},
+    async_processing=True
+)
+
 prompt_text = None
-
-if audio_bytes is not None:
-    audio_file = io.BytesIO(audio_bytes)
-    st.audio(audio_file, format="audio/wav")
-
-    # Otomatis transkrip & kirim ke chatbot
-    with st.spinner("📝 Mengubah suara menjadi teks..."):
+if st.button("🎤 Kirim ke Whisper") and webrtc_ctx.audio_processor:
+    audio_processor = webrtc_ctx.audio_processor
+    if audio_processor.audio_bytes:
+        audio_file = io.BytesIO(audio_processor.audio_bytes)
         transcription = openai.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file
@@ -159,7 +161,7 @@ if audio_bytes is not None:
         st.markdown(f"**Transkrip:** {prompt_text}")
 
 # ========================================================== #
-# Input text alternatif
+# Input teks alternatif
 # ========================================================== #
 text_input = st.text_input("💬 Atau ketik pertanyaan tentang film...", "")
 if text_input:
