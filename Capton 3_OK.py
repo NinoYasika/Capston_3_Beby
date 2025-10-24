@@ -9,23 +9,25 @@ from langchain.tools import tool
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
 
-# --- Load environment file ---
+# ==============================================================
+# 🔐 Load environment & API Keys
+# ==============================================================
 load_dotenv()
 
-# --- Ambil API key dari secrets atau .env ---
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-# --- Inisialisasi model dan embedding ---
+# ==============================================================
+# ⚙️ Inisialisasi model dan embedding
+# ==============================================================
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
-# ============================================================== #
-# 🧩 Membaca CSV dan Upload ke Qdrant
-# ============================================================== #
-
+# ==============================================================
+# 📦 Upload CSV ke Qdrant (sekali saja, cached)
+# ==============================================================
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
     csv_path = os.path.join(os.path.dirname(__file__), "imdb_movies.csv")
@@ -61,14 +63,15 @@ def load_and_upload_csv_to_qdrant():
 load_and_upload_csv_to_qdrant()
 
 qdrant = QdrantVectorStore.from_existing_collection(
-    embedding=embeddings, collection_name=collection_name,
-    url=QDRANT_URL, api_key=QDRANT_API_KEY
+    embedding=embeddings,
+    collection_name=collection_name,
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY
 )
 
-# ============================================================== #
-# 🎬 Tool dan fungsi chatbot
-# ============================================================== #
-
+# ==============================================================
+# 🧠 Tool pencarian dokumen film
+# ==============================================================
 @tool
 def get_relevant_docs(question):
     """Gunakan tool ini untuk mencari dokumen film terkait."""
@@ -76,13 +79,11 @@ def get_relevant_docs(question):
 
 tools = [get_relevant_docs]
 
-# ============================================================== #
-# 🎬 Rekomendasi Film Berdasarkan Fitur (Versi Lebih Luas)
-# ============================================================== #
-
+# ==============================================================
+# 🎬 Fungsi Rekomendasi Film (diperbaiki agar tidak muncul film utama)
+# ==============================================================
 def get_similar_movies_by_features(title, top_k=3):
     try:
-        # Cari film yang relevan di database
         search_results = qdrant.similarity_search(title, k=200)
 
         def normalize_text(t):
@@ -100,6 +101,7 @@ def get_similar_movies_by_features(title, top_k=3):
         if not input_movie:
             input_movie = search_results[0].metadata
 
+        # Ambil data film input
         input_overview = normalize_text(input_movie.get("Overview", ""))
         input_rating = float(input_movie.get("IMDB_Rating", 0) or 0)
         input_cert = normalize_text(input_movie.get("Certificate", ""))
@@ -116,8 +118,15 @@ def get_similar_movies_by_features(title, top_k=3):
 
         for doc in search_results:
             raw_title = doc.metadata.get("Series_Title", "")
-            movie_title = normalize_text(raw_title)
-            if movie_title == title_norm or movie_title in unique_titles:
+            movie_title_norm = normalize_text(raw_title)
+            movie_title_lower = raw_title.lower().strip()
+
+            # ❌ Lewati film utama & duplikat
+            if (
+                movie_title_norm == title_norm
+                or movie_title_lower == title.lower().strip()
+                or movie_title_norm in unique_titles
+            ):
                 continue
 
             overview = normalize_text(doc.metadata.get("Overview", ""))
@@ -131,26 +140,17 @@ def get_similar_movies_by_features(title, top_k=3):
                 normalize_text(doc.metadata.get("Star4", "")),
             }
 
-            # Skor berdasarkan kemiripan overview
+            # 💡 Skoring gabungan
             overlap_words = len(set(input_overview.split()) & set(overview.split()))
             overview_score = overlap_words / (len(set(input_overview.split())) + 1)
-
-            # Skor berdasarkan rating (lebih longgar)
             rating_diff = abs(float(rating) - float(input_rating))
             rating_score = max(0, 1 - (rating_diff / 5))
-
-            # Skor sertifikat
             cert_score = 0.5 if cert == input_cert and cert else 0.0
-
-            # Skor genre
             genre_overlap = len(set(input_genre.split(",")) & set(genre.split(",")))
             genre_score = genre_overlap / max(1, len(set(input_genre.split(","))))
-
-            # Skor bintang pemeran
             star_overlap = len(input_stars & stars)
             star_score = star_overlap / 4.0
 
-            # Total skor gabungan
             total_score = (
                 overview_score * 0.3
                 + rating_score * 0.2
@@ -160,30 +160,33 @@ def get_similar_movies_by_features(title, top_k=3):
             )
 
             scored_recommendations.append((doc, total_score))
-            unique_titles.add(movie_title)
+            unique_titles.add(movie_title_norm)
 
-        # Urutkan hasil
+        # Urutkan dan filter hasil akhir
         scored_recommendations.sort(key=lambda x: x[1], reverse=True)
+        filtered_recommendations = [
+            (doc, score) for doc, score in scored_recommendations
+            if normalize_text(doc.metadata.get("Series_Title", "")) != title_norm
+            and doc.metadata.get("Series_Title", "").lower().strip() != title.lower().strip()
+        ]
 
-        # Tambahkan fallback jika hasil kurang
-        if len(scored_recommendations) < top_k:
-            additional = [
-                doc for doc in search_results
-                if normalize_text(doc.metadata.get("Series_Title", "")) not in unique_titles
-            ][:top_k - len(scored_recommendations)]
-            scored_recommendations.extend((doc, 0.0) for doc in additional)
-
-        recommendations = [doc for doc, _ in scored_recommendations[:top_k]]
-        return recommendations
+        return [doc for doc, _ in filtered_recommendations[:top_k]]
 
     except Exception as e:
         st.error(f"❌ Terjadi kesalahan saat mencari rekomendasi: {e}")
         return []
 
+# ==============================================================
+# 🖼️ Tampilan hasil rekomendasi
+# ==============================================================
 def show_movie_recommendations(title, top_k=3):
     recommendations = get_similar_movies_by_features(title, top_k=top_k)
-
     st.subheader("🎬 Rekomendasi Film Serupa:")
+
+    if not recommendations:
+        st.write("Belum ada rekomendasi relevan.")
+        return
+
     for i, doc in enumerate(recommendations, start=1):
         rec_title = doc.metadata.get("Series_Title", "")
         overview = doc.metadata.get("Overview", "")
@@ -202,7 +205,7 @@ def show_movie_recommendations(title, top_k=3):
             if poster_url:
                 st.image(poster_url, width=100)
             else:
-                st.write("No poster")
+                st.write("🎞️ No poster")
         with cols[1]:
             st.markdown(f"**{i}. {rec_title}**")
             st.markdown(f"⭐ Rating: {rating} | 🎞️ Certificate: {cert}")
@@ -210,10 +213,9 @@ def show_movie_recommendations(title, top_k=3):
             st.markdown(f"📝 {overview[:200]}{'...' if len(overview) > 200 else ''}")
         st.markdown("---")
 
-# ============================================================== #
+# ==============================================================
 # 💬 Fungsi utama chatbot
-# ============================================================== #
-
+# ==============================================================
 def chat_imdb(question, history):
     agent = create_react_agent(
         model=llm, tools=tools,
@@ -235,16 +237,16 @@ def chat_imdb(question, history):
     tool_messages = [msg.content for msg in result["messages"] if isinstance(msg, ToolMessage)]
 
     return {
-        "answer": answer, "price": price,
+        "answer": answer,
+        "price": price,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
         "tool_messages": tool_messages
     }
 
-# ============================================================== #
+# ==============================================================
 # 🎨 Tampilan Streamlit
-# ============================================================== #
-
+# ==============================================================
 st.set_page_config(page_title="🎬 Movie Lover", page_icon="🎥", layout="wide")
 
 with st.sidebar:
@@ -252,7 +254,7 @@ with st.sidebar:
     st.markdown("🤖 **Your AI Movie Expert!**")
     st.markdown("Cari tahu film keren, sinopsis, pemeran, dan informasi lain tentang film 🎞️")
     st.divider()
-    st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI + LangGraph + Pandas + Dotenv + Re + OS + Python + GitHub + VSCode")
+    st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI")
 
 st.title("🎥 Movie Master")
 
