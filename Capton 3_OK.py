@@ -256,7 +256,7 @@ with st.sidebar:
     st.divider()
     st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI")
 
-st.title("🎥 Movie Master")
+st.title("🎥 Movie 'Lover'")
 
 current_dir = os.path.dirname(__file__)
 image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
