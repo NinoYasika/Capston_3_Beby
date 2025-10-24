@@ -247,16 +247,16 @@ def chat_imdb(question, history):
 # ==============================================================
 # 🎨 Tampilan Streamlit
 # ==============================================================
-st.set_page_config(page_title="🎬 Movie Lover", page_icon="🎥", layout="wide")
+st.set_page_config(page_title="🎬 Movie Lovers", page_icon="🎥", layout="wide")
 
 with st.sidebar:
-    st.title("🎬 Movie Lover")
+    st.title("🎬 Movie Lovers")
     st.markdown("🤖 **Your AI Movie Expert!**")
     st.markdown("Cari tahu film keren, sinopsis, pemeran, dan informasi lain tentang film 🎞️")
     st.divider()
     st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI")
 
-st.title("🎥 Movie 'Lover'")
+st.title("🎥 Movie Lovers")
 
 current_dir = os.path.dirname(__file__)
 image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
