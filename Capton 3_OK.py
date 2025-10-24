@@ -55,7 +55,6 @@ def load_and_upload_csv_to_qdrant():
             url=QDRANT_URL,
             api_key=QDRANT_API_KEY
         )
-        st.success("✅ Koleksi 'imdb_movies' berhasil diunggah ke Qdrant!")
     except Exception as e:
         st.warning(f"⚠️ Koleksi mungkin sudah ada: {str(e)}")
 
@@ -78,59 +77,104 @@ def get_relevant_docs(question):
 tools = [get_relevant_docs]
 
 # ============================================================== #
-# 🧠 Fungsi rekomendasi film berdasarkan genre
+# 🎬 Rekomendasi Film Berdasarkan Overview, Rating, Certificate, dan Stars
 # ============================================================== #
 
-def get_similar_movies_by_genre(title, top_k=3):
+def get_similar_movies_by_features(title, top_k=3):
     try:
-        similar_docs = qdrant.similarity_search(title, k=50)
+        # Cari film yang relevan di database
+        search_results = qdrant.similarity_search(title, k=100)
 
         def normalize_text(t):
-            return re.sub(r'[^a-z0-9 ]', '', t.lower().strip())
+            return re.sub(r'[^a-z0-9 ]', '', str(t).lower().strip())
 
         title_norm = normalize_text(title)
-        input_genre = ""
-        for doc in similar_docs:
+        input_movie = None
+
+        # Cari metadata film input
+        for doc in search_results:
             if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
-                input_genre = doc.metadata.get("Genre", "")
+                input_movie = doc.metadata
                 break
 
-        input_genres = [g.strip().lower() for g in input_genre.split(",")]
+        if not input_movie:
+            return []
+
+        input_overview = normalize_text(input_movie.get("Overview", ""))
+        input_rating = input_movie.get("IMDB_Rating", 0)
+        input_cert = normalize_text(input_movie.get("Certificate", ""))
+        input_stars = {
+            normalize_text(input_movie.get("Star1", "")),
+            normalize_text(input_movie.get("Star2", "")),
+            normalize_text(input_movie.get("Star3", "")),
+            normalize_text(input_movie.get("Star4", "")),
+        }
 
         unique_titles = set()
-        recommendations = []
+        scored_recommendations = []
 
-        for doc in similar_docs:
+        for doc in search_results:
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title = normalize_text(raw_title)
             if movie_title == title_norm or movie_title in unique_titles:
                 continue
 
-            doc_genre = doc.metadata.get("Genre", "")
-            doc_genres = [g.strip().lower() for g in doc_genre.split(",")]
-            if any(g in input_genres for g in doc_genres):
-                unique_titles.add(movie_title)
-                recommendations.append(doc)
+            # --- Ambil metadata film kandidat ---
+            overview = normalize_text(doc.metadata.get("Overview", ""))
+            rating = doc.metadata.get("IMDB_Rating", 0)
+            cert = normalize_text(doc.metadata.get("Certificate", ""))
+            stars = {
+                normalize_text(doc.metadata.get("Star1", "")),
+                normalize_text(doc.metadata.get("Star2", "")),
+                normalize_text(doc.metadata.get("Star3", "")),
+                normalize_text(doc.metadata.get("Star4", "")),
+            }
 
-            if len(recommendations) >= top_k:
-                break
+            # --- Hitung skor kemiripan ---
+            overlap_words = len(set(input_overview.split()) & set(overview.split()))
+            overview_score = overlap_words / (len(set(input_overview.split())) + 1)
 
-        return recommendations  # langsung kembalikan list dokumen
+            rating_diff = abs(float(rating) - float(input_rating)) if rating else 2.0
+            rating_score = max(0, 1 - (rating_diff / 10))
+
+            cert_score = 1.0 if cert == input_cert and cert else 0.0
+
+            star_overlap = len(input_stars & stars)
+            star_score = star_overlap / 4.0
+
+            total_score = (overview_score * 0.5) + (rating_score * 0.2) + (cert_score * 0.1) + (star_score * 0.2)
+
+            scored_recommendations.append((doc, total_score))
+            unique_titles.add(movie_title)
+
+        scored_recommendations.sort(key=lambda x: x[1], reverse=True)
+        recommendations = [doc for doc, score in scored_recommendations[:top_k]]
+        return recommendations
 
     except Exception as e:
+        st.error(f"❌ Terjadi kesalahan saat mencari rekomendasi: {e}")
         return []
 
+
 def show_movie_recommendations(title, top_k=3):
-    recommendations = get_similar_movies_by_genre(title, top_k=top_k)
+    recommendations = get_similar_movies_by_features(title, top_k=top_k)
 
     if not recommendations:
-        st.info("🎬 Tidak ada film serupa berdasarkan genre.")
+        st.info("🎬 Tidak ada film serupa yang ditemukan berdasarkan overview, rating, dan pemeran.")
         return
 
     st.subheader("🎬 Rekomendasi Film Serupa:")
     for i, doc in enumerate(recommendations, start=1):
         rec_title = doc.metadata.get("Series_Title", "")
-        genre = doc.metadata.get("Genre", "Unknown")
+        overview = doc.metadata.get("Overview", "")
+        rating = doc.metadata.get("IMDB_Rating", "N/A")
+        cert = doc.metadata.get("Certificate", "N/A")
+        stars = ", ".join(filter(None, [
+            doc.metadata.get("Star1", ""),
+            doc.metadata.get("Star2", ""),
+            doc.metadata.get("Star3", ""),
+            doc.metadata.get("Star4", "")
+        ]))
         poster_url = doc.metadata.get("Poster_Link", "")
 
         cols = st.columns([1, 3])
@@ -141,7 +185,9 @@ def show_movie_recommendations(title, top_k=3):
                 st.write("No poster")
         with cols[1]:
             st.markdown(f"**{i}. {rec_title}**")
-            st.markdown(f"Genre: {genre}")
+            st.markdown(f"⭐ Rating: {rating} | 🎞️ Certificate: {cert}")
+            st.markdown(f"👥 Pemeran: {stars}")
+            st.markdown(f"📝 {overview[:200]}{'...' if len(overview) > 200 else ''}")
         st.markdown("---")
 
 # ============================================================== #
@@ -184,11 +230,11 @@ st.set_page_config(page_title="🎬 Movie Master", page_icon="🎥", layout="wid
 with st.sidebar:
     st.title("🎬 Movie Lovers")
     st.markdown("🤖 **Your AI Movie Expert!**")
-    st.markdown("Cari tahu sinopsis, pemeran, dan film serupa 🎞️")
+    st.markdown("Cari tahu film keren, sinopsis, pemeran, dan informasi lain tentang film 🎞️")
     st.divider()
-    st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit")
+    st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI + LangGraph + Pandas + Dotenv + Re + OS + Python + GitHub + VSCode")
 
-st.title("🎥 Movie Master Chatbot")
+st.title("🎥 Movie Master")
 
 current_dir = os.path.dirname(__file__)
 image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
@@ -214,7 +260,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.markdown(response["answer"])
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
 
-            # Tampilkan rekomendasi film visual berdasarkan genre
+            # 🔍 Rekomendasi film visual berdasarkan fitur
             show_movie_recommendations(prompt, top_k=3)
 
     with st.expander("📊 Token Usage & Tool Logs"):
