@@ -80,7 +80,7 @@ def get_relevant_docs(question):
 tools = [get_relevant_docs]
 
 # ==============================================================
-# 🎬 Fungsi Rekomendasi Film (diperbaiki agar tidak muncul film utama)
+# 🎬 Fungsi Rekomendasi Film
 # ==============================================================
 def get_similar_movies_by_features(title, top_k=3):
     try:
@@ -162,7 +162,6 @@ def get_similar_movies_by_features(title, top_k=3):
             scored_recommendations.append((doc, total_score))
             unique_titles.add(movie_title_norm)
 
-        # Urutkan dan filter hasil akhir
         scored_recommendations.sort(key=lambda x: x[1], reverse=True)
         filtered_recommendations = [
             (doc, score) for doc, score in scored_recommendations
@@ -214,14 +213,19 @@ def show_movie_recommendations(title, top_k=3):
         st.markdown("---")
 
 # ==============================================================
-# 💬 Fungsi utama chatbot
+# 💬 Fungsi utama chatbot + history
 # ==============================================================
 def chat_imdb(question, history):
     agent = create_react_agent(
         model=llm, tools=tools,
         prompt="You are a movie expert. Use the tools to answer accurately about movies."
     )
-    result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+
+    # Gabungkan percakapan sebelumnya
+    messages = [{"role": msg["role"].lower(), "content": msg["content"]} for msg in history]
+    messages.append({"role": "user", "content": question})
+
+    result = agent.invoke({"messages": messages})
     answer = result["messages"][-1].content
 
     total_input_tokens = sum(
@@ -263,16 +267,24 @@ image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
 if os.path.exists(image_path):
     st.image(image_path, width=800)
 
+# =============================================================
+# 🕒 Inisialisasi chat history
+# =============================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Tampilkan semua riwayat chat
 for msg in st.session_state.messages:
     avatar = "🧑‍💻" if msg["role"] == "Human" else "🎬"
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
+# =============================================================
+# ✍️ Input chat baru
+# =============================================================
 if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
     st.session_state.messages.append({"role": "Human", "content": prompt})
+
     with st.chat_message("Human", avatar="🧑‍💻"):
         st.markdown(prompt)
 
@@ -283,8 +295,16 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
             show_movie_recommendations(prompt, top_k=3)
 
+    # Simpan history secara otomatis
     with st.expander("📊 Token Usage & Tool Logs"):
         st.write(f"Input tokens: {response['total_input_tokens']}")
         st.write(f"Output tokens: {response['total_output_tokens']}")
         st.write(f"Estimated cost: Rp {response['price']:.4f}")
         st.code(response["tool_messages"])
+
+# =============================================================
+# 🗑️ Tombol hapus riwayat chat
+# =============================================================
+if st.sidebar.button("🧹 Hapus Riwayat Chat"):
+    st.session_state.messages = []
+    st.experimental_rerun()
