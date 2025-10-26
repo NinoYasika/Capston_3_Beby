@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import streamlit as st
 import pandas as pd
 from dotenv import load_dotenv
@@ -13,19 +14,20 @@ from langchain_core.messages import ToolMessage
 # 🔐 Load environment & API Keys
 # ==============================================================
 load_dotenv()
+
 QDRANT_URL = st.secrets.get("QDRANT_URL", os.getenv("QDRANT_URL"))
 QDRANT_API_KEY = st.secrets.get("QDRANT_API_KEY", os.getenv("QDRANT_API_KEY"))
 OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
 
 # ==============================================================
-# ⚙️ Inisialisasi model & embeddings
+# ⚙️ Inisialisasi model dan embedding
 # ==============================================================
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small", api_key=OPENAI_API_KEY)
 collection_name = "imdb_movies"
 
 # ==============================================================
-# 📦 Upload CSV ke Qdrant (hanya 1x)
+# 📦 Upload CSV ke Qdrant (sekali saja, cached)
 # ==============================================================
 @st.cache_data
 def load_and_upload_csv_to_qdrant():
@@ -79,7 +81,7 @@ def get_relevant_docs(question):
 tools = [get_relevant_docs]
 
 # ==============================================================
-# 🎬 Rekomendasi Film
+# 🎬 Fungsi Rekomendasi Film
 # ==============================================================
 def get_similar_movies_by_features(title, top_k=3):
     try:
@@ -138,7 +140,7 @@ def get_similar_movies_by_features(title, top_k=3):
 
             overlap_words = len(set(input_overview.split()) & set(overview.split()))
             overview_score = overlap_words / (len(set(input_overview.split())) + 1)
-            rating_diff = abs(rating - input_rating)
+            rating_diff = abs(float(rating) - float(input_rating))
             rating_score = max(0, 1 - (rating_diff / 5))
             cert_score = 0.5 if cert == input_cert and cert else 0.0
             genre_overlap = len(set(input_genre.split(",")) & set(genre.split(",")))
@@ -158,14 +160,19 @@ def get_similar_movies_by_features(title, top_k=3):
             unique_titles.add(movie_title_norm)
 
         scored_recommendations.sort(key=lambda x: x[1], reverse=True)
-        return [doc for doc, _ in scored_recommendations[:top_k]]
+        filtered_recommendations = [
+            (doc, score) for doc, score in scored_recommendations
+            if normalize_text(doc.metadata.get("Series_Title", "")) != title_norm
+        ]
+
+        return [doc for doc, _ in filtered_recommendations[:top_k]]
 
     except Exception as e:
         st.error(f"❌ Terjadi kesalahan saat mencari rekomendasi: {e}")
         return []
 
 # ==============================================================
-# 🖼️ Tampilan rekomendasi film
+# 🖼️ Tampilan hasil rekomendasi
 # ==============================================================
 def show_movie_recommendations(title, top_k=3):
     recommendations = get_similar_movies_by_features(title, top_k=top_k)
@@ -202,7 +209,7 @@ def show_movie_recommendations(title, top_k=3):
         st.markdown("---")
 
 # ==============================================================
-# 💬 Chatbot
+# 💬 Chatbot utama
 # ==============================================================
 def chat_imdb(question, history):
     agent = create_react_agent(
@@ -219,10 +226,12 @@ def chat_imdb(question, history):
     total_input_tokens = sum(
         msg.response_metadata.get("usage_metadata", {}).get("input_tokens", 0)
         for msg in result["messages"]
+        if hasattr(msg, "response_metadata")
     )
     total_output_tokens = sum(
         msg.response_metadata.get("usage_metadata", {}).get("output_tokens", 0)
         for msg in result["messages"]
+        if hasattr(msg, "response_metadata")
     )
 
     price = 17000 * (total_input_tokens * 0.15 + total_output_tokens * 0.6) / 1_000_000
@@ -237,14 +246,13 @@ def chat_imdb(question, history):
     }
 
 # ==============================================================
-# 🎨 Streamlit UI
+# 🎨 Tampilan Streamlit
 # ==============================================================
 st.set_page_config(page_title="🎬 Movie Lovers", page_icon="🎥", layout="wide")
 
 with st.sidebar:
     st.title("🎬 Movie Lovers")
     st.markdown("🤖 **Your AI Movie Expert!**")
-    st.markdown("Cari tahu film keren, sinopsis, pemeran, dan informasi lain tentang film 🎞️")
     st.divider()
     st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI")
 
@@ -256,12 +264,12 @@ if os.path.exists(image_path):
     st.image(image_path, width=800)
 
 # ==============================================================
-# 🕒 Chat history
+# 🕒 Inisialisasi history chat
 # ==============================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# tampilkan chat history
+# Tampilkan semua riwayat chat
 for msg in st.session_state.messages:
     avatar = "🧑‍💻" if msg["role"] == "Human" else "🎬"
     with st.chat_message(msg["role"], avatar=avatar):
@@ -278,29 +286,31 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
 
     with st.chat_message("AI", avatar="🎬"):
         with st.spinner("🎞️ Searching the movie database..."):
-            try:
-                response = chat_imdb(prompt, st.session_state.messages)
-                st.markdown(response["answer"])
-                st.session_state.messages.append({"role": "AI", "content": response["answer"]})
+            response = chat_imdb(prompt, st.session_state.messages)
+            st.markdown(response["answer"])
+            st.session_state.messages.append({"role": "AI", "content": response["answer"]})
+            show_movie_recommendations(prompt, top_k=3)
 
-                # tampilkan rekomendasi
-                try:
-                    show_movie_recommendations(prompt, top_k=3)
-                except Exception as e:
-                    st.warning(f"⚠️ Gagal menampilkan rekomendasi: {e}")
-
-                with st.expander("📊 Token Usage & Tool Logs"):
-                    st.write(f"Input tokens: {response['total_input_tokens']}")
-                    st.write(f"Output tokens: {response['total_output_tokens']}")
-                    st.write(f"Estimated cost: Rp {response['price']:.4f}")
-                    st.code(response["tool_messages"])
-
-            except Exception as e:
-                st.error(f"❌ Terjadi kesalahan saat menjalankan chatbot: {e}")
+    with st.expander("📊 Token Usage & Tool Logs"):
+        st.write(f"Input tokens: {response['total_input_tokens']}")
+        st.write(f"Output tokens: {response['total_output_tokens']}")
+        st.write(f"Estimated cost: Rp {response['price']:.4f}")
+        st.code(response["tool_messages"])
 
 # ==============================================================
-# 🗑️ Tombol hapus history
+# 🗑️ Tombol hapus history chat (fix)
 # ==============================================================
-if st.sidebar.button("🧹 Hapus Riwayat Chat"):
+def clear_chat_history_and_rerun():
     st.session_state.messages = []
-    st.experimental_rerun()
+    try:
+        if hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+        else:
+            params = st.experimental_get_query_params()
+            params["_refresh"] = [str(time.time())]
+            st.experimental_set_query_params(**params)
+    except Exception:
+        st.warning("Riwayat sudah dihapus — silakan refresh halaman jika belum berubah.")
+
+if st.sidebar.button("🧹 Hapus Riwayat Chat"):
+    clear_chat_history_and_rerun()
