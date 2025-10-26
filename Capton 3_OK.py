@@ -92,7 +92,6 @@ def get_similar_movies_by_features(title, top_k=3):
         title_norm = normalize_text(title)
         input_movie = None
 
-        # Cari metadata film input
         for doc in search_results:
             if normalize_text(doc.metadata.get("Series_Title", "")) == title_norm:
                 input_movie = doc.metadata
@@ -101,7 +100,6 @@ def get_similar_movies_by_features(title, top_k=3):
         if not input_movie:
             input_movie = search_results[0].metadata
 
-        # Ambil data film input
         input_overview = normalize_text(input_movie.get("Overview", ""))
         input_rating = float(input_movie.get("IMDB_Rating", 0) or 0)
         input_cert = normalize_text(input_movie.get("Certificate", ""))
@@ -119,14 +117,7 @@ def get_similar_movies_by_features(title, top_k=3):
         for doc in search_results:
             raw_title = doc.metadata.get("Series_Title", "")
             movie_title_norm = normalize_text(raw_title)
-            movie_title_lower = raw_title.lower().strip()
-
-            # ❌ Lewati film utama & duplikat
-            if (
-                movie_title_norm == title_norm
-                or movie_title_lower == title.lower().strip()
-                or movie_title_norm in unique_titles
-            ):
+            if movie_title_norm == title_norm or movie_title_norm in unique_titles:
                 continue
 
             overview = normalize_text(doc.metadata.get("Overview", ""))
@@ -140,11 +131,9 @@ def get_similar_movies_by_features(title, top_k=3):
                 normalize_text(doc.metadata.get("Star4", "")),
             }
 
-            # 💡 Skoring gabungan
             overlap_words = len(set(input_overview.split()) & set(overview.split()))
             overview_score = overlap_words / (len(set(input_overview.split())) + 1)
-            rating_diff = abs(float(rating) - float(input_rating))
-            rating_score = max(0, 1 - (rating_diff / 5))
+            rating_score = max(0, 1 - abs(float(rating) - float(input_rating)) / 5)
             cert_score = 0.5 if cert == input_cert and cert else 0.0
             genre_overlap = len(set(input_genre.split(",")) & set(genre.split(",")))
             genre_score = genre_overlap / max(1, len(set(input_genre.split(","))))
@@ -163,57 +152,14 @@ def get_similar_movies_by_features(title, top_k=3):
             unique_titles.add(movie_title_norm)
 
         scored_recommendations.sort(key=lambda x: x[1], reverse=True)
-        filtered_recommendations = [
-            (doc, score) for doc, score in scored_recommendations
-            if normalize_text(doc.metadata.get("Series_Title", "")) != title_norm
-            and doc.metadata.get("Series_Title", "").lower().strip() != title.lower().strip()
-        ]
-
-        return [doc for doc, _ in filtered_recommendations[:top_k]]
+        return [doc for doc, _ in scored_recommendations[:top_k]]
 
     except Exception as e:
         st.error(f"❌ Terjadi kesalahan saat mencari rekomendasi: {e}")
         return []
 
 # ==============================================================
-# 🖼️ Tampilan hasil rekomendasi
-# ==============================================================
-def show_movie_recommendations(title, top_k=3):
-    recommendations = get_similar_movies_by_features(title, top_k=top_k)
-    st.subheader("🎬 Rekomendasi Film Serupa:")
-
-    if not recommendations:
-        st.write("Belum ada rekomendasi relevan.")
-        return
-
-    for i, doc in enumerate(recommendations, start=1):
-        rec_title = doc.metadata.get("Series_Title", "")
-        overview = doc.metadata.get("Overview", "")
-        rating = doc.metadata.get("IMDB_Rating", "N/A")
-        cert = doc.metadata.get("Certificate", "N/A")
-        stars = ", ".join(filter(None, [
-            doc.metadata.get("Star1", ""),
-            doc.metadata.get("Star2", ""),
-            doc.metadata.get("Star3", ""),
-            doc.metadata.get("Star4", "")
-        ]))
-        poster_url = doc.metadata.get("Poster_Link", "")
-
-        cols = st.columns([1, 3])
-        with cols[0]:
-            if poster_url:
-                st.image(poster_url, width=100)
-            else:
-                st.write("🎞️ No poster")
-        with cols[1]:
-            st.markdown(f"**{i}. {rec_title}**")
-            st.markdown(f"⭐ Rating: {rating} | 🎞️ Certificate: {cert}")
-            st.markdown(f"👥 Pemeran: {stars}")
-            st.markdown(f"📝 {overview[:200]}{'...' if len(overview) > 200 else ''}")
-        st.markdown("---")
-
-# ==============================================================
-# 💬 Fungsi utama chatbot + history
+# 💬 Chatbot dengan history
 # ==============================================================
 def chat_imdb(question, history):
     agent = create_react_agent(
@@ -221,7 +167,7 @@ def chat_imdb(question, history):
         prompt="You are a movie expert. Use the tools to answer accurately about movies."
     )
 
-    # Gabungkan percakapan sebelumnya
+    # Kirim semua riwayat sebelumnya ke LLM
     messages = [{"role": msg["role"].lower(), "content": msg["content"]} for msg in history]
     messages.append({"role": "user", "content": question})
 
@@ -256,9 +202,11 @@ st.set_page_config(page_title="🎬 Movie Lovers", page_icon="🎥", layout="wid
 with st.sidebar:
     st.title("🎬 Movie Lovers")
     st.markdown("🤖 **Your AI Movie Expert!**")
-    st.markdown("Cari tahu film keren, sinopsis, pemeran, dan informasi lain tentang film 🎞️")
     st.divider()
     st.markdown("**Made by:** Beby Hanzian\n**Powered by:** LangChain + Qdrant + Streamlit + OpenAI")
+    if st.button("🧹 Hapus Riwayat Chat"):
+        st.session_state.messages = []
+        st.rerun()
 
 st.title("🎥 Movie Lovers")
 
@@ -267,27 +215,30 @@ image_path = os.path.join(current_dir, "Movie Master Agent", "header_img.png")
 if os.path.exists(image_path):
     st.image(image_path, width=800)
 
-# =============================================================
-# 🕒 Inisialisasi chat history
-# =============================================================
+# ==============================================================
+# 🕒 Inisialisasi & tampilkan history
+# ==============================================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Tampilkan semua riwayat chat
+# Tampilkan semua percakapan lama
 for msg in st.session_state.messages:
     avatar = "🧑‍💻" if msg["role"] == "Human" else "🎬"
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
-# =============================================================
+# ==============================================================
 # ✍️ Input chat baru
-# =============================================================
+# ==============================================================
 if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
+    # Tambah pesan user ke history
     st.session_state.messages.append({"role": "Human", "content": prompt})
 
+    # Tampilkan langsung di UI
     with st.chat_message("Human", avatar="🧑‍💻"):
         st.markdown(prompt)
 
+    # Dapatkan jawaban dari model
     with st.chat_message("AI", avatar="🎬"):
         with st.spinner("🎞️ Searching the movie database..."):
             response = chat_imdb(prompt, st.session_state.messages)
@@ -295,16 +246,9 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
             st.session_state.messages.append({"role": "AI", "content": response["answer"]})
             show_movie_recommendations(prompt, top_k=3)
 
-    # Simpan history secara otomatis
+    # Tampilkan token usage
     with st.expander("📊 Token Usage & Tool Logs"):
         st.write(f"Input tokens: {response['total_input_tokens']}")
         st.write(f"Output tokens: {response['total_output_tokens']}")
         st.write(f"Estimated cost: Rp {response['price']:.4f}")
         st.code(response["tool_messages"])
-
-# =============================================================
-# 🗑️ Tombol hapus riwayat chat
-# =============================================================
-if st.sidebar.button("🧹 Hapus Riwayat Chat"):
-    st.session_state.messages = []
-    st.experimental_rerun()
