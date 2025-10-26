@@ -298,7 +298,7 @@ if prompt := st.chat_input("Tanyakan sesuatu tentang film... 🎞️"):
         st.code(response["tool_messages"])
 
 # ==============================================================
-# 🗑️ Tombol hapus history chat (fix)
+# 🗑️ Tombol hapus history chat (versi modern)
 # ==============================================================
 def clear_chat_history_and_rerun():
     st.session_state.messages = []
@@ -306,9 +306,7 @@ def clear_chat_history_and_rerun():
         if hasattr(st, "experimental_rerun"):
             st.experimental_rerun()
         else:
-            params = st.experimental_get_query_params()
-            params["_refresh"] = [str(time.time())]
-            st.experimental_set_query_params(**params)
+            st.query_params["_refresh"] = str(time.time())
     except Exception:
         st.warning("Riwayat sudah dihapus — silakan refresh halaman jika belum berubah.")
 
